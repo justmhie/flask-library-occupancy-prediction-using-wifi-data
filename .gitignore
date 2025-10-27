@@ -1,0 +1,11 @@
+# Large data files
+all_data_cleaned.csv
+*.csv
+data/
+*.pkl
+*.h5
+*.parquet
+
+# Or be more specific
+*_cleaned.csv
+all_data*.csv
