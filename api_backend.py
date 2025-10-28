@@ -11,6 +11,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import pickle
 import os
+import json
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -429,6 +430,34 @@ def get_libraries():
         libraries = [k for k in predictions_cache.keys() if k != 'overall']
         return jsonify({'libraries': libraries})
 
+@app.route('/api/models/metrics', methods=['GET'])
+def get_model_metrics():
+    """Get metrics for all trained models"""
+    try:
+        # Load metrics from training results
+        metrics_file = 'training_results/all_models_results.json'
+        if os.path.exists(metrics_file):
+            with open(metrics_file, 'r') as f:
+                metrics_data = json.load(f)
+            return jsonify({'models': metrics_data})
+        else:
+            return jsonify({'models': {}, 'message': 'No training metrics available. Please train models first.'})
+    except Exception as e:
+        logger.error(f"Error loading model metrics: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/models/retrain', methods=['POST'])
+def retrain_models():
+    """Trigger retraining of all models"""
+    try:
+        import subprocess
+        # Run training script in background
+        subprocess.Popen(['python', 'train_all_libraries.py'])
+        return jsonify({'status': 'success', 'message': 'Model training started in background'})
+    except Exception as e:
+        logger.error(f"Error starting training: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/', methods=['GET'])
 def home():
     """Home endpoint"""
@@ -439,6 +468,8 @@ def home():
             'GET /api/predictions': 'Get all predictions',
             'GET /api/predictions/<library>': 'Get prediction for specific library',
             'GET /api/libraries': 'Get list of libraries',
+            'GET /api/models/metrics': 'Get training metrics for all models',
+            'POST /api/models/retrain': 'Retrain all models',
             'GET /api/status': 'Get API status',
             'POST /api/refresh': 'Force refresh predictions'
         }
