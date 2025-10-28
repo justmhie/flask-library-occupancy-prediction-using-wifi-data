@@ -1,42 +1,44 @@
 import React, { useState, useEffect } from 'react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, AreaChart, Area, RadarChart,
-  Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ScatterChart, Scatter
+  Tooltip, Legend, ResponsiveContainer, ComposedChart, ScatterChart, Scatter
 } from 'recharts';
 
 const AdminDashboard = () => {
-  const [selectedLibrary, setSelectedLibrary] = useState('all');
-  const [data, setData] = useState(null);
+  const [selectedModelType, setSelectedModelType] = useState('cnn_only');
+  const [modelTypes, setModelTypes] = useState([]);
+  const [predictions, setPredictions] = useState(null);
   const [modelMetrics, setModelMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState(null);
-  const [viewMode, setViewMode] = useState('overview'); // overview, predictions, comparison, metrics
+  const [viewMode, setViewMode] = useState('overview'); // overview, metrics, comparison
 
-  // Library locations
-  const libraries = [
-    { id: 'all', name: 'All Libraries (Overall)' },
-    { id: 'miguel_pro', name: 'Miguel Pro Library' },
-    { id: 'gisbert_2nd', name: 'Gisbert 2nd Floor' },
-    { id: 'american_corner', name: 'American Corner' },
-    { id: 'gisbert_3rd', name: 'Gisbert 3rd Floor' },
-    { id: 'gisbert_4th', name: 'Gisbert 4th Floor' },
-    { id: 'gisbert_5th', name: 'Gisbert 5th Floor' }
-  ];
+  // Fetch model types
+  const fetchModelTypes = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/model-types');
+      if (response.ok) {
+        const data = await response.json();
+        setModelTypes(data.model_types || []);
+      }
+    } catch (error) {
+      console.error('Error fetching model types:', error);
+    }
+  };
 
-  // Fetch predictions from API
-  const fetchData = async () => {
+  // Fetch predictions for selected model type
+  const fetchPredictions = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      const response = await fetch('http://localhost:5000/api/predictions');
+      const response = await fetch(`http://localhost:5000/api/predictions?model_type=${selectedModelType}`);
       if (!response.ok) throw new Error(`API returned ${response.status}`);
 
       const jsonData = await response.json();
-      setData(jsonData);
+      setPredictions(jsonData);
       setLastUpdate(new Date());
     } catch (error) {
       console.error('Error fetching predictions:', error);
@@ -46,7 +48,7 @@ const AdminDashboard = () => {
     }
   };
 
-  // Fetch model metrics
+  // Fetch model metrics (all model types)
   const fetchModelMetrics = async () => {
     try {
       const response = await fetch('http://localhost:5000/api/models/metrics');
@@ -60,589 +62,455 @@ const AdminDashboard = () => {
   };
 
   useEffect(() => {
-    fetchData();
+    fetchModelTypes();
     fetchModelMetrics();
+  }, []);
 
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        fetchData();
-        fetchModelMetrics();
-      }, 60000);
-      return () => clearInterval(interval);
+  useEffect(() => {
+    if (selectedModelType) {
+      fetchPredictions();
+
+      if (autoRefresh) {
+        const interval = setInterval(fetchPredictions, 60000);
+        return () => clearInterval(interval);
+      }
     }
-  }, [autoRefresh]);
+  }, [selectedModelType, autoRefresh]);
 
-  // Get data for selected library
-  const getLibraryData = () => {
-    if (!data || !data.libraries) return null;
-    return data.libraries[selectedLibrary] || data.libraries.all;
+  // Get comparison data for all model types
+  const getModelComparisonData = () => {
+    if (!modelMetrics || !modelMetrics.model_types) return [];
+
+    return Object.entries(modelMetrics.model_types).map(([modelTypeId, modelData]) => ({
+      name: modelData.model_name || modelTypeId,
+      id: modelTypeId,
+      avgR2: calculateAvgMetric(modelData.libraries, 'r2'),
+      avgRMSE: calculateAvgMetric(modelData.libraries, 'rmse'),
+      avgMAE: calculateAvgMetric(modelData.libraries, 'mae'),
+      avgMAPE: calculateAvgMetric(modelData.libraries, 'mape'),
+      numLibraries: Object.keys(modelData.libraries || {}).length
+    }));
   };
 
-  const libraryData = getLibraryData();
+  // Calculate average metric across all libraries for a model
+  const calculateAvgMetric = (libraries, metricName) => {
+    if (!libraries) return 0;
+    const values = Object.values(libraries).map(lib => lib.metrics?.[metricName] || 0);
+    return values.reduce((sum, val) => sum + val, 0) / values.length;
+  };
 
-  // Get metrics for comparison
-  const getComparisonData = () => {
-    if (!modelMetrics || !modelMetrics.models) return [];
+  // Get library performance for selected model type
+  const getLibraryPerformanceData = () => {
+    if (!modelMetrics || !modelMetrics.model_types || !selectedModelType) return [];
 
-    return Object.entries(modelMetrics.models).map(([id, model]) => ({
-      name: libraries.find(lib => lib.id === id)?.name || id,
-      id: id,
-      r2: model.metrics?.r2 || 0,
-      rmse: model.metrics?.rmse || 0,
-      mae: model.metrics?.mae || 0,
-      mape: model.metrics?.mape || 0,
-      avgOccupancy: model.data_stats?.avg_occupancy || 0,
-      maxOccupancy: model.data_stats?.max_occupancy || 0
+    const selectedModel = modelMetrics.model_types[selectedModelType];
+    if (!selectedModel || !selectedModel.libraries) return [];
+
+    return Object.entries(selectedModel.libraries).map(([libId, libData]) => ({
+      name: libData.library_name || libId,
+      id: libId,
+      r2: (libData.metrics?.r2 || 0).toFixed(4),
+      rmse: (libData.metrics?.rmse || 0).toFixed(2),
+      mae: (libData.metrics?.mae || 0).toFixed(2),
+      mape: (libData.metrics?.mape || 0).toFixed(2),
+      avgOccupancy: (libData.data_stats?.avg_occupancy || 0).toFixed(1),
+      maxOccupancy: libData.data_stats?.max_occupancy || 0
+    }));
+  };
+
+  // Get current predictions for all libraries
+  const getCurrentPredictions = () => {
+    if (!predictions || !predictions.libraries) return [];
+
+    return Object.values(predictions.libraries).map(lib => ({
+      name: lib.library_name || lib.library_id,
+      current: lib.current || 0,
+      predicted: lib.predicted || 0,
+      change: lib.change || 0,
+      avg_24h: lib.avg_24h || 0
     }));
   };
 
   // Loading state
-  if (loading && !data) {
+  if (loading && !predictions) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
-        <div style={{ textAlign: 'center', color: 'white' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⏳</div>
-          <p style={{ fontSize: '1.5rem' }}>Loading Admin Dashboard...</p>
-        </div>
+      <div style={{ padding: '40px', textAlign: 'center', color: '#666' }}>
+        <h2>Loading Model Comparison Dashboard...</h2>
       </div>
     );
   }
 
-  return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', padding: '2rem' }}>
-      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
-
-        {/* Header */}
-        <div style={{
-          background: 'white',
-          borderRadius: '12px',
-          boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-          padding: '2rem',
-          marginBottom: '2rem'
+  // Error state
+  if (error) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center' }}>
+        <h2 style={{ color: '#e74c3c' }}>Error Loading Data</h2>
+        <p>{error}</p>
+        <button onClick={fetchPredictions} style={{
+          padding: '10px 20px',
+          background: '#3498db',
+          color: 'white',
+          border: 'none',
+          borderRadius: '5px',
+          cursor: 'pointer'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-            <div>
-              <h1 style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#1a202c', margin: 0 }}>
-                🎛️ Library Occupancy Admin Dashboard
-              </h1>
-              <p style={{ color: '#718096', marginTop: '0.5rem', fontSize: '1.1rem' }}>
-                Real-time predictions with CNN-LSTM models for all library locations
-              </p>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <p style={{ fontSize: '0.875rem', color: '#a0aec0', margin: 0 }}>Last Updated</p>
-              <p style={{ fontSize: '1.125rem', fontWeight: '600', color: '#2d3748', margin: '0.25rem 0' }}>
-                {lastUpdate.toLocaleTimeString()}
-              </p>
-              <button
-                onClick={() => setAutoRefresh(!autoRefresh)}
-                style={{
-                  marginTop: '0.5rem',
-                  padding: '0.5rem 1rem',
-                  borderRadius: '8px',
-                  fontSize: '0.875rem',
-                  fontWeight: '500',
-                  border: 'none',
-                  cursor: 'pointer',
-                  background: autoRefresh ? '#48bb78' : '#cbd5e0',
-                  color: 'white'
-                }}
-              >
-                {autoRefresh ? '🔄 Auto-refresh ON' : '⏸️ Auto-refresh OFF'}
-              </button>
-            </div>
-          </div>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
-          {/* View Mode Selector */}
-          <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {[
-              { id: 'overview', name: '📊 Overview', icon: '📊' },
-              { id: 'predictions', name: '🔮 Predictions', icon: '🔮' },
-              { id: 'comparison', name: '📈 Model Comparison', icon: '📈' },
-              { id: 'metrics', name: '📉 Detailed Metrics', icon: '📉' }
-            ].map(mode => (
-              <button
-                key={mode.id}
-                onClick={() => setViewMode(mode.id)}
-                style={{
-                  padding: '0.75rem 1.5rem',
-                  borderRadius: '8px',
-                  border: viewMode === mode.id ? '2px solid #667eea' : '2px solid #e2e8f0',
-                  background: viewMode === mode.id ? '#667eea' : 'white',
-                  color: viewMode === mode.id ? 'white' : '#4a5568',
-                  cursor: 'pointer',
-                  fontWeight: '600',
-                  fontSize: '0.95rem',
-                  transition: 'all 0.2s'
-                }}
-              >
-                {mode.name}
-              </button>
+  const libraryData = getCurrentPredictions();
+  const modelComparison = getModelComparisonData();
+  const libraryPerformance = getLibraryPerformanceData();
+
+  return (
+    <div style={{ background: '#f5f7fa', minHeight: '100vh', padding: '20px' }}>
+      {/* Header */}
+      <div style={{
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        padding: '30px',
+        borderRadius: '15px',
+        marginBottom: '20px',
+        color: 'white'
+      }}>
+        <h1 style={{ margin: 0, marginBottom: '10px', fontSize: '32px' }}>
+          Model Type Comparison Dashboard
+        </h1>
+        <p style={{ margin: 0, opacity: 0.9 }}>
+          Compare LSTM, CNN, Hybrid, and Advanced CNN-LSTM Models Across All Libraries
+        </p>
+      </div>
+
+      {/* Controls */}
+      <div style={{
+        background: 'white',
+        padding: '20px',
+        borderRadius: '10px',
+        marginBottom: '20px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+        display: 'flex',
+        gap: '20px',
+        flexWrap: 'wrap',
+        alignItems: 'center'
+      }}>
+        <div style={{ flex: '1', minWidth: '200px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#555' }}>
+            Select Model Type:
+          </label>
+          <select
+            value={selectedModelType}
+            onChange={(e) => setSelectedModelType(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px',
+              borderRadius: '5px',
+              border: '2px solid #ddd',
+              fontSize: '16px',
+              cursor: 'pointer'
+            }}
+          >
+            {modelTypes.map(model => (
+              <option key={model.id} value={model.id}>{model.name}</option>
             ))}
+          </select>
+        </div>
+
+        <div style={{ flex: '1', minWidth: '200px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#555' }}>
+            View Mode:
+          </label>
+          <select
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px',
+              borderRadius: '5px',
+              border: '2px solid #ddd',
+              fontSize: '16px',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="overview">Overview - Current Predictions</option>
+            <option value="metrics">Performance Metrics by Library</option>
+            <option value="comparison">Model Type Comparison</option>
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            style={{
+              padding: '10px 20px',
+              background: autoRefresh ? '#2ecc71' : '#95a5a6',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            Auto-refresh: {autoRefresh ? 'ON' : 'OFF'}
+          </button>
+          <button
+            onClick={fetchPredictions}
+            style={{
+              padding: '10px 20px',
+              background: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            Refresh Now
+          </button>
+        </div>
+
+        <div style={{ marginLeft: 'auto', fontSize: '14px', color: '#666' }}>
+          Last updated: {lastUpdate.toLocaleTimeString()}
+        </div>
+      </div>
+
+      {/* Overview Mode */}
+      {viewMode === 'overview' && (
+        <>
+          <div style={{
+            background: 'white',
+            padding: '20px',
+            borderRadius: '10px',
+            marginBottom: '20px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+          }}>
+            <h2 style={{ marginTop: 0 }}>
+              Current Predictions - {modelTypes.find(m => m.id === selectedModelType)?.name}
+            </h2>
+            <p style={{ color: '#666' }}>
+              Real-time occupancy predictions for all libraries using the selected model
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px', marginTop: '20px' }}>
+              {libraryData.map((lib, idx) => (
+                <div key={idx} style={{
+                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  padding: '20px',
+                  borderRadius: '10px',
+                  color: 'white'
+                }}>
+                  <h3 style={{ margin: '0 0 15px 0', fontSize: '16px' }}>{lib.name}</h3>
+                  <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '10px' }}>
+                    {lib.current} users
+                  </div>
+                  <div style={{ fontSize: '14px', opacity: 0.9 }}>
+                    Predicted next: <strong>{lib.predicted}</strong> users
+                    <br />
+                    Change: <strong style={{ color: lib.change >= 0 ? '#2ecc71' : '#e74c3c' }}>
+                      {lib.change >= 0 ? '+' : ''}{lib.change}
+                    </strong>
+                    <br />
+                    24h avg: {lib.avg_24h} users
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* Library Selector */}
-          {viewMode !== 'comparison' && (
-            <div style={{ marginTop: '1.5rem' }}>
-              <label style={{ fontSize: '0.875rem', fontWeight: '600', color: '#4a5568', display: 'block', marginBottom: '0.5rem' }}>
-                Select Library:
-              </label>
-              <select
-                value={selectedLibrary}
-                onChange={(e) => setSelectedLibrary(e.target.value)}
-                style={{
-                  width: '100%',
-                  maxWidth: '500px',
-                  padding: '0.75rem',
-                  fontSize: '1rem',
-                  border: '2px solid #e2e8f0',
-                  borderRadius: '8px',
-                  background: 'white',
-                  cursor: 'pointer'
-                }}
-              >
-                {libraries.map(lib => (
-                  <option key={lib.id} value={lib.id}>{lib.name}</option>
-                ))}
-              </select>
+          {predictions && predictions.libraries && Object.values(predictions.libraries)[0]?.hourly_data && (
+            <div style={{
+              background: 'white',
+              padding: '20px',
+              borderRadius: '10px',
+              marginBottom: '20px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+            }}>
+              <h2>Hourly Trends (Last 24h + Predictions)</h2>
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={Object.values(predictions.libraries)[0].hourly_data}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="time" angle={-45} textAnchor="end" height={100} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="actual" stroke="#3498db" strokeWidth={2} name="Actual" />
+                  <Line type="monotone" dataKey="predicted" stroke="#e74c3c" strokeWidth={2} strokeDasharray="5 5" name="Predicted" />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           )}
-        </div>
+        </>
+      )}
 
-        {error && (
-          <div style={{
-            background: '#fff5f5',
-            border: '1px solid #feb2b2',
-            borderRadius: '8px',
-            padding: '1rem',
-            marginBottom: '1rem',
-            color: '#c53030'
-          }}>
-            ⚠️ API Error: {error}
+      {/* Metrics Mode */}
+      {viewMode === 'metrics' && (
+        <div style={{
+          background: 'white',
+          padding: '20px',
+          borderRadius: '10px',
+          marginBottom: '20px',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+        }}>
+          <h2 style={{ marginTop: 0 }}>
+            Performance Metrics by Library - {modelTypes.find(m => m.id === selectedModelType)?.name}
+          </h2>
+          <p style={{ color: '#666' }}>
+            Training accuracy metrics for each library using this model type
+          </p>
+
+          {/* R² Score Chart */}
+          <div style={{ marginTop: '30px' }}>
+            <h3>R² Score (Coefficient of Determination)</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={libraryPerformance}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" angle={-15} textAnchor="end" height={100} />
+                <YAxis domain={[0, 1]} />
+                <Tooltip />
+                <Bar dataKey="r2" fill="#2ecc71" name="R² Score" />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-        )}
 
-        {/* OVERVIEW MODE */}
-        {viewMode === 'overview' && libraryData && (
-          <OverviewView libraryData={libraryData} selectedLibrary={selectedLibrary} libraries={libraries} />
-        )}
+          {/* RMSE Chart */}
+          <div style={{ marginTop: '30px' }}>
+            <h3>RMSE (Root Mean Squared Error)</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={libraryPerformance}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" angle={-15} textAnchor="end" height={100} />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="rmse" fill="#e74c3c" name="RMSE" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
 
-        {/* PREDICTIONS MODE */}
-        {viewMode === 'predictions' && libraryData && (
-          <PredictionsView libraryData={libraryData} />
-        )}
-
-        {/* COMPARISON MODE */}
-        {viewMode === 'comparison' && modelMetrics && (
-          <ComparisonView comparisonData={getComparisonData()} />
-        )}
-
-        {/* METRICS MODE */}
-        {viewMode === 'metrics' && modelMetrics && (
-          <MetricsView modelMetrics={modelMetrics} selectedLibrary={selectedLibrary} libraries={libraries} />
-        )}
-
-      </div>
-    </div>
-  );
-};
-
-// ============================================
-// OVERVIEW VIEW COMPONENT
-// ============================================
-
-const OverviewView = ({ libraryData, selectedLibrary, libraries }) => (
-  <div>
-    {/* Stats Cards */}
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-      <StatCard
-        title="Current Users"
-        value={libraryData.current || 0}
-        subtitle="Right now"
-        icon="👥"
-        color="#667eea"
-      />
-      <StatCard
-        title="Predicted Next Hour"
-        value={libraryData.predicted || 0}
-        subtitle={`${libraryData.change > 0 ? '📈' : '📉'} ${Math.abs(libraryData.change || 0)} users`}
-        icon="🔮"
-        color="#764ba2"
-      />
-      <StatCard
-        title="24h Average"
-        value={libraryData.avg_24h || 0}
-        subtitle="Average users"
-        icon="📊"
-        color="#f093fb"
-      />
-      <StatCard
-        title="Peak Today"
-        value={libraryData.peak_today || 0}
-        subtitle={`at ${libraryData.peak_time || 'N/A'}`}
-        icon="⭐"
-        color="#4facfe"
-      />
-      <StatCard
-        title="7-Day Average"
-        value={libraryData.avg_7d || 0}
-        subtitle="Weekly average"
-        icon="📅"
-        color="#43e97b"
-      />
-      <StatCard
-        title="Max Capacity"
-        value={libraryData.max_capacity || 'N/A'}
-        subtitle={libraryData.max_capacity ? `${Math.round((libraryData.current / libraryData.max_capacity) * 100)}% used` : 'N/A'}
-        icon="📈"
-        color="#fa709a"
-      />
-    </div>
-
-    {/* Hourly Trend Chart */}
-    {libraryData.hourly_data && (
-      <ChartCard title="📈 Hourly Occupancy Trend (Last 24 Hours + Predictions)">
-        <ResponsiveContainer width="100%" height={350}>
-          <AreaChart data={libraryData.hourly_data}>
-            <defs>
-              <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#667eea" stopOpacity={0.8}/>
-                <stop offset="95%" stopColor="#667eea" stopOpacity={0}/>
-              </linearGradient>
-              <linearGradient id="colorPredicted" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#f093fb" stopOpacity={0.8}/>
-                <stop offset="95%" stopColor="#f093fb" stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Area type="monotone" dataKey="actual" stroke="#667eea" fillOpacity={1} fill="url(#colorActual)" name="Actual Users" />
-            <Area type="monotone" dataKey="predicted" stroke="#f093fb" strokeDasharray="5 5" fillOpacity={1} fill="url(#colorPredicted)" name="Predicted" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </ChartCard>
-    )}
-
-    {/* Daily Pattern */}
-    {libraryData.daily_pattern && (
-      <ChartCard title="📊 Daily Usage Pattern (Average by Hour of Day)">
-        <ResponsiveContainer width="100%" height={350}>
-          <BarChart data={libraryData.daily_pattern}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="hour" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="average" fill="#764ba2" name="Average Users" />
-            <Bar dataKey="peak" fill="#f093fb" name="Peak Users" />
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
-    )}
-  </div>
-);
-
-// ============================================
-// PREDICTIONS VIEW COMPONENT
-// ============================================
-
-const PredictionsView = ({ libraryData }) => (
-  <div>
-    {/* Next Hours Forecast */}
-    {libraryData.next_hours && (
-      <ChartCard title="🔮 Next 6 Hours Forecast with Confidence Intervals">
-        <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={libraryData.next_hours}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="predicted" stroke="#667eea" strokeWidth={3} name="Predicted" dot={{ r: 6 }} />
-            <Line type="monotone" dataKey="confidence_upper" stroke="#cbd5e0" strokeDasharray="5 5" name="Upper Bound" />
-            <Line type="monotone" dataKey="confidence_lower" stroke="#cbd5e0" strokeDasharray="5 5" name="Lower Bound" />
-          </LineChart>
-        </ResponsiveContainer>
-      </ChartCard>
-    )}
-
-    {/* Predictions Table */}
-    {libraryData.next_hours && (
-      <div style={{
-        background: 'white',
-        borderRadius: '12px',
-        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-        padding: '2rem',
-        marginTop: '2rem'
-      }}>
-        <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1a202c', marginBottom: '1.5rem' }}>
-          📋 Detailed Predictions Table
-        </h2>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f7fafc', borderBottom: '2px solid #e2e8f0' }}>
-                <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600' }}>Time</th>
-                <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>Predicted Users</th>
-                <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>Lower Bound</th>
-                <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>Upper Bound</th>
-                <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>Confidence Range</th>
-              </tr>
-            </thead>
-            <tbody>
-              {libraryData.next_hours.map((hour, idx) => (
-                <tr key={idx} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                  <td style={{ padding: '1rem' }}>{hour.time}</td>
-                  <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '600', color: '#667eea' }}>{hour.predicted}</td>
-                  <td style={{ padding: '1rem', textAlign: 'right', color: '#718096' }}>{hour.confidence_lower}</td>
-                  <td style={{ padding: '1rem', textAlign: 'right', color: '#718096' }}>{hour.confidence_upper}</td>
-                  <td style={{ padding: '1rem', textAlign: 'right', color: '#4a5568' }}>
-                    ±{Math.round((hour.confidence_upper - hour.confidence_lower) / 2)}
-                  </td>
+          {/* Detailed Metrics Table */}
+          <div style={{ marginTop: '30px', overflowX: 'auto' }}>
+            <h3>Detailed Metrics</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f8f9fa' }}>
+                  <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #dee2e6' }}>Library</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>R²</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>RMSE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>MAE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>MAPE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Avg Occupancy</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Max Occupancy</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {libraryPerformance.map((lib, idx) => (
+                  <tr key={idx} style={{ borderBottom: '1px solid #dee2e6' }}>
+                    <td style={{ padding: '12px' }}>{lib.name}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.r2}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.rmse}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.mae}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.mape}%</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.avgOccupancy}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{lib.maxOccupancy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    )}
-  </div>
-);
+      )}
 
-// ============================================
-// COMPARISON VIEW COMPONENT
-// ============================================
+      {/* Comparison Mode */}
+      {viewMode === 'comparison' && (
+        <div style={{
+          background: 'white',
+          padding: '20px',
+          borderRadius: '10px',
+          marginBottom: '20px',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+        }}>
+          <h2 style={{ marginTop: 0 }}>Model Type Comparison</h2>
+          <p style={{ color: '#666' }}>
+            Compare average performance across all model architectures
+          </p>
 
-const ComparisonView = ({ comparisonData }) => (
-  <div>
-    {/* R² Comparison */}
-    <ChartCard title="📊 Model Performance: R² Scores (Higher is Better)">
-      <ResponsiveContainer width="100%" height={400}>
-        <BarChart data={comparisonData} layout="vertical">
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis type="number" domain={[0, 1]} />
-          <YAxis dataKey="name" type="category" width={200} />
-          <Tooltip />
-          <Legend />
-          <Bar dataKey="r2" fill="#667eea" name="R² Score" />
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartCard>
+          {/* Average R² Comparison */}
+          <div style={{ marginTop: '30px' }}>
+            <h3>Average R² Score by Model Type</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={modelComparison}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis domain={[0, 1]} />
+                <Tooltip />
+                <Bar dataKey="avgR2" fill="#2ecc71" name="Avg R²" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
 
-    {/* RMSE Comparison */}
-    <ChartCard title="📉 Model Performance: RMSE (Lower is Better)">
-      <ResponsiveContainer width="100%" height={400}>
-        <BarChart data={comparisonData} layout="vertical">
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis type="number" />
-          <YAxis dataKey="name" type="category" width={200} />
-          <Tooltip />
-          <Legend />
-          <Bar dataKey="rmse" fill="#f093fb" name="RMSE (users)" />
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartCard>
+          {/* Average RMSE Comparison */}
+          <div style={{ marginTop: '30px' }}>
+            <h3>Average RMSE by Model Type</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={modelComparison}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="avgRMSE" fill="#e74c3c" name="Avg RMSE" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
 
-    {/* Average Occupancy Comparison */}
-    <ChartCard title="👥 Average Occupancy by Library">
-      <ResponsiveContainer width="100%" height={400}>
-        <BarChart data={comparisonData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="name" angle={-45} textAnchor="end" height={120} />
-          <YAxis />
-          <Tooltip />
-          <Legend />
-          <Bar dataKey="avgOccupancy" fill="#43e97b" name="Average Users" />
-          <Bar dataKey="maxOccupancy" fill="#fa709a" name="Peak Users" />
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartCard>
+          {/* Comparison Table */}
+          <div style={{ marginTop: '30px', overflowX: 'auto' }}>
+            <h3>Model Performance Summary</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f8f9fa' }}>
+                  <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #dee2e6' }}>Model Type</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Avg R²</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Avg RMSE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Avg MAE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Avg MAPE</th>
+                  <th style={{ padding: '12px', textAlign: 'center', borderBottom: '2px solid #dee2e6' }}>Libraries</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modelComparison.map((model, idx) => (
+                  <tr key={idx} style={{
+                    borderBottom: '1px solid #dee2e6',
+                    background: model.id === selectedModelType ? '#e3f2fd' : 'transparent'
+                  }}>
+                    <td style={{ padding: '12px', fontWeight: model.id === selectedModelType ? 'bold' : 'normal' }}>
+                      {model.name}
+                    </td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{model.avgR2.toFixed(4)}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{model.avgRMSE.toFixed(2)}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{model.avgMAE.toFixed(2)}</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{model.avgMAPE.toFixed(2)}%</td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>{model.numLibraries}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
-    {/* Comparison Table */}
-    <div style={{
-      background: 'white',
-      borderRadius: '12px',
-      boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-      padding: '2rem',
-      marginTop: '2rem'
-    }}>
-      <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1a202c', marginBottom: '1.5rem' }}>
-        📋 Model Metrics Comparison Table
-      </h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ background: '#f7fafc', borderBottom: '2px solid #e2e8f0' }}>
-              <th style={{ padding: '1rem', textAlign: 'left', fontWeight: '600' }}>Library</th>
-              <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>R²</th>
-              <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>RMSE</th>
-              <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>MAE</th>
-              <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>MAPE</th>
-              <th style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>Avg Occupancy</th>
-            </tr>
-          </thead>
-          <tbody>
-            {comparisonData.map((lib, idx) => (
-              <tr key={idx} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                <td style={{ padding: '1rem', fontWeight: '600' }}>{lib.name}</td>
-                <td style={{ padding: '1rem', textAlign: 'right' }}>{lib.r2.toFixed(4)}</td>
-                <td style={{ padding: '1rem', textAlign: 'right' }}>{lib.rmse.toFixed(2)}</td>
-                <td style={{ padding: '1rem', textAlign: 'right' }}>{lib.mae.toFixed(2)}</td>
-                <td style={{ padding: '1rem', textAlign: 'right' }}>{lib.mape.toFixed(2)}%</td>
-                <td style={{ padding: '1rem', textAlign: 'right' }}>{lib.avgOccupancy.toFixed(1)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-);
-
-// ============================================
-// METRICS VIEW COMPONENT
-// ============================================
-
-const MetricsView = ({ modelMetrics, selectedLibrary, libraries }) => {
-  const libraryName = libraries.find(lib => lib.id === selectedLibrary)?.name || selectedLibrary;
-  const metrics = modelMetrics.models?.[selectedLibrary];
-
-  if (!metrics) {
-    return (
+      {/* Footer */}
       <div style={{
         background: 'white',
-        borderRadius: '12px',
-        padding: '3rem',
+        padding: '15px',
+        borderRadius: '10px',
         textAlign: 'center',
-        color: '#718096'
+        color: '#666',
+        fontSize: '14px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
-        <p style={{ fontSize: '1.2rem' }}>No metrics available for {libraryName}</p>
-        <p>Please train the model first.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      {/* Metrics Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-        <MetricCard title="R² Score" value={metrics.metrics?.r2?.toFixed(4) || 'N/A'} description="Coefficient of Determination" color="#667eea" />
-        <MetricCard title="RMSE" value={`${metrics.metrics?.rmse?.toFixed(2) || 'N/A'} users`} description="Root Mean Squared Error" color="#f093fb" />
-        <MetricCard title="MAE" value={`${metrics.metrics?.mae?.toFixed(2) || 'N/A'} users`} description="Mean Absolute Error" color="#43e97b" />
-        <MetricCard title="MAPE" value={`${metrics.metrics?.mape?.toFixed(2) || 'N/A'}%`} description="Mean Absolute % Error" color="#fa709a" />
-      </div>
-
-      {/* Data Statistics */}
-      <div style={{
-        background: 'white',
-        borderRadius: '12px',
-        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-        padding: '2rem',
-        marginBottom: '2rem'
-      }}>
-        <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1a202c', marginBottom: '1.5rem' }}>
-          📊 Dataset Statistics
-        </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
-          <DataStat label="Total Records" value={(metrics.data_stats?.total_records || 0).toLocaleString()} />
-          <DataStat label="Total Hours" value={(metrics.data_stats?.total_hours || 0).toLocaleString()} />
-          <DataStat label="Training Samples" value={(metrics.data_stats?.training_samples || 0).toLocaleString()} />
-          <DataStat label="Testing Samples" value={(metrics.data_stats?.testing_samples || 0).toLocaleString()} />
-          <DataStat label="Min Occupancy" value={`${metrics.data_stats?.min_occupancy || 0} users`} />
-          <DataStat label="Max Occupancy" value={`${metrics.data_stats?.max_occupancy || 0} users`} />
-          <DataStat label="Avg Occupancy" value={`${metrics.data_stats?.avg_occupancy?.toFixed(1) || 0} users`} />
-          <DataStat label="Epochs Trained" value={metrics.data_stats?.epochs_trained || 'N/A'} />
-        </div>
-      </div>
-
-      {/* Model Info */}
-      <div style={{
-        background: 'white',
-        borderRadius: '12px',
-        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-        padding: '2rem'
-      }}>
-        <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1a202c', marginBottom: '1.5rem' }}>
-          🤖 Model Information
-        </h2>
-        <div style={{ display: 'grid', gap: '1rem' }}>
-          <InfoRow label="Location" value={libraryName} />
-          <InfoRow label="Model File" value={metrics.model_path || 'N/A'} />
-          <InfoRow label="Scaler File" value={metrics.scaler_path || 'N/A'} />
-          <InfoRow label="Training Date" value={metrics.trained_date ? new Date(metrics.trained_date).toLocaleString() : 'N/A'} />
-        </div>
+        <p style={{ margin: 0 }}>
+          Model Comparison Dashboard | Last updated: {lastUpdate.toLocaleString()}
+        </p>
       </div>
     </div>
   );
 };
-
-// ============================================
-// UTILITY COMPONENTS
-// ============================================
-
-const StatCard = ({ title, value, subtitle, icon, color }) => (
-  <div style={{
-    background: 'white',
-    borderRadius: '12px',
-    boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-    padding: '1.5rem',
-    borderTop: `4px solid ${color}`
-  }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-      <div style={{ flex: 1 }}>
-        <p style={{ fontSize: '0.875rem', color: '#718096', marginBottom: '0.5rem' }}>{title}</p>
-        <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#1a202c', margin: '0.5rem 0' }}>{value}</p>
-        <p style={{ fontSize: '0.75rem', color: '#a0aec0' }}>{subtitle}</p>
-      </div>
-      <div style={{ fontSize: '2.5rem' }}>{icon}</div>
-    </div>
-  </div>
-);
-
-const MetricCard = ({ title, value, description, color }) => (
-  <div style={{
-    background: 'white',
-    borderRadius: '12px',
-    boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-    padding: '1.5rem',
-    borderLeft: `6px solid ${color}`
-  }}>
-    <h3 style={{ fontSize: '0.875rem', color: '#718096', margin: '0 0 0.5rem 0' }}>{title}</h3>
-    <p style={{ fontSize: '2rem', fontWeight: 'bold', color: '#1a202c', margin: '0.5rem 0' }}>{value}</p>
-    <p style={{ fontSize: '0.75rem', color: '#a0aec0', margin: '0.5rem 0 0 0' }}>{description}</p>
-  </div>
-);
-
-const ChartCard = ({ title, children }) => (
-  <div style={{
-    background: 'white',
-    borderRadius: '12px',
-    boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-    padding: '2rem',
-    marginBottom: '2rem'
-  }}>
-    <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1a202c', marginBottom: '1.5rem' }}>
-      {title}
-    </h2>
-    {children}
-  </div>
-);
-
-const DataStat = ({ label, value }) => (
-  <div>
-    <p style={{ fontSize: '0.875rem', color: '#718096', marginBottom: '0.25rem' }}>{label}</p>
-    <p style={{ fontSize: '1.25rem', fontWeight: '600', color: '#2d3748' }}>{value}</p>
-  </div>
-);
-
-const InfoRow = ({ label, value }) => (
-  <div style={{ display: 'flex', padding: '0.75rem', background: '#f7fafc', borderRadius: '6px' }}>
-    <span style={{ fontWeight: '600', color: '#4a5568', minWidth: '150px' }}>{label}:</span>
-    <span style={{ color: '#718096', wordBreak: 'break-all' }}>{value}</span>
-  </div>
-);
 
 export default AdminDashboard;

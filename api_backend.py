@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 CLEANED_DATA_FILE = 'all_data_cleaned.csv'
-MODEL_FILE = 'saved_models/cnn_lstm_model.keras'
-SCALER_FILE = 'saved_scalers/occupancy_scaler.pkl'
 CACHE_FILE = 'predictions_cache.pkl'
 UPDATE_INTERVAL = 60  # seconds
 SEQUENCE_LENGTH = 24  # Must match training
@@ -41,68 +39,80 @@ predictions_cache = {}
 last_update_time = None
 cache_lock = threading.Lock()
 
-# Global model and scaler
-model = None
-scaler = None
+# Global models and scalers (keyed by model_type_location)
+models_cache = {}
+scalers_cache = {}
 
-# Library configurations
-LIBRARIES = [
-    'Miguel_Pro',
-    'Gisbert_2nd_Floor',
-    'American_Corner',
-    'Gisbert_3rd_Floor',
-    'Gisbert_4th_Floor',
-    'Gisbert_5th_Floor'
-]
+# Model types and libraries
+MODEL_TYPES = {
+    'lstm_only': 'LSTM Only',
+    'cnn_only': 'CNN Only',
+    'hybrid_cnn_lstm': 'Hybrid CNN-LSTM',
+    'advanced_cnn_lstm': 'Advanced CNN-LSTM'
+}
+
+LIBRARY_IDS = {
+    'miguel_pro': 'Miguel Pro Library',
+    'american_corner': 'American Corner',
+    'gisbert_2nd': 'Gisbert 2nd Floor',
+    'gisbert_3rd': 'Gisbert 3rd Floor',
+    'gisbert_4th': 'Gisbert 4th Floor',
+    'gisbert_5th': 'Gisbert 5th Floor'
+}
 
 # ============================================
 # MODEL LOADING
 # ============================================
 
-def load_trained_model():
-    """Load the trained CNN-LSTM model and scaler"""
-    global model, scaler
+def load_all_models():
+    """Load all trained models and scalers for all model types and libraries"""
+    global models_cache, scalers_cache
 
-    try:
-        if os.path.exists(MODEL_FILE):
-            logger.info(f"Loading trained model from {MODEL_FILE}...")
-            model = load_model(MODEL_FILE)
-            logger.info("✓ Model loaded successfully")
-        else:
-            logger.warning(f"Model file not found: {MODEL_FILE}")
-            logger.warning("Will use simple statistical prediction instead")
-            model = None
+    logger.info("Loading all trained models...")
+    loaded_count = 0
 
-        if os.path.exists(SCALER_FILE):
-            logger.info(f"Loading scaler from {SCALER_FILE}...")
-            with open(SCALER_FILE, 'rb') as f:
-                scaler = pickle.load(f)
-            logger.info("✓ Scaler loaded successfully")
-        else:
-            logger.warning(f"Scaler file not found: {SCALER_FILE}")
-            scaler = None
+    for model_type in MODEL_TYPES.keys():
+        for library_id in LIBRARY_IDS.keys():
+            model_key = f"{model_type}_{library_id}"
+            model_path = f"saved_models/{model_key}_model.keras"
+            scaler_path = f"saved_scalers/{model_key}_scaler.pkl"
 
-        return model is not None and scaler is not None
+            try:
+                if os.path.exists(model_path) and os.path.exists(scaler_path):
+                    # Load model
+                    model = load_model(model_path)
+                    models_cache[model_key] = model
 
-    except Exception as e:
-        logger.error(f"Error loading model: {e}")
-        model = None
-        scaler = None
-        return False
+                    # Load scaler
+                    with open(scaler_path, 'rb') as f:
+                        scaler = pickle.load(f)
+                    scalers_cache[model_key] = scaler
+
+                    loaded_count += 1
+                else:
+                    logger.warning(f"Missing files for {model_key}")
+            except Exception as e:
+                logger.error(f"Error loading {model_key}: {e}")
+
+    logger.info(f"✓ Loaded {loaded_count} models successfully")
+    return loaded_count > 0
 
 # ============================================
 # PREDICTION FUNCTIONS
 # ============================================
 
 def load_historical_data():
-    """Load and process historical data"""
+    """Load and process historical data with location mapping"""
     try:
         df = pd.read_csv(CLEANED_DATA_FILE)
         logger.info(f"Loaded {len(df)} rows from {CLEANED_DATA_FILE}")
-        logger.info(f"Columns: {df.columns.tolist()}")
 
         df['Start_dt'] = pd.to_datetime(df['Start_dt'])
         df.set_index('Start_dt', inplace=True)
+
+        # Add location mapping
+        from ap_location_mapping import get_location_from_ap
+        df['Location'] = df['AP MAC'].apply(get_location_from_ap)
 
         logger.info(f"Date range: {df.index.min()} to {df.index.max()}")
         return df
@@ -110,25 +120,37 @@ def load_historical_data():
         logger.error(f"Error loading data: {e}")
         return None
 
-def get_library_occupancy(df, location=None, hours=168):
-    """Get occupancy time series for a library"""
-    if location and 'Location' in df.columns:
-        df = df[df['Location'] == location]
+def get_library_occupancy(df, library_id, hours=168):
+    """Get occupancy time series for a specific library"""
+    if 'Location' not in df.columns:
+        logger.error("Location column not found in data")
+        return None
 
-    occupancy = df['Client MAC'].resample('h').nunique()
+    df_lib = df[df['Location'] == library_id]
+
+    if len(df_lib) == 0:
+        logger.warning(f"No data for library {library_id}")
+        return None
+
+    occupancy = df_lib['Client MAC'].resample('h').nunique()
     occupancy = occupancy.fillna(0)
 
-    logger.info(f"Generated occupancy series: {len(occupancy)} hours, min={occupancy.min()}, max={occupancy.max()}, current={occupancy.iloc[-1] if len(occupancy) > 0 else 'N/A'}")
+    logger.info(f"Library {library_id}: {len(occupancy)} hours, current={occupancy.iloc[-1] if len(occupancy) > 0 else 'N/A'}")
 
     return occupancy.tail(hours)
 
-def predict_with_model(occupancy_series, hours_ahead=6):
-    """Predict using trained CNN-LSTM model"""
-    global model, scaler
+def predict_with_specific_model(model_type, library_id, occupancy_series, hours_ahead=6):
+    """Predict using a specific model type and library"""
+    global models_cache, scalers_cache
 
-    if model is None or scaler is None:
-        logger.warning("Model or scaler not loaded, using simple prediction")
+    model_key = f"{model_type}_{library_id}"
+
+    if model_key not in models_cache or model_key not in scalers_cache:
+        logger.warning(f"Model {model_key} not loaded, using simple prediction")
         return predict_simple(occupancy_series, hours_ahead)
+
+    model = models_cache[model_key]
+    scaler = scalers_cache[model_key]
 
     if len(occupancy_series) < SEQUENCE_LENGTH:
         logger.warning(f"Need at least {SEQUENCE_LENGTH} hours, have {len(occupancy_series)}, using simple prediction")
@@ -146,8 +168,15 @@ def predict_with_model(occupancy_series, hours_ahead=6):
         current_sequence = scaled_data.copy()
 
         for _ in range(hours_ahead):
-            # Reshape for model input: (1, SEQUENCE_LENGTH, 1)
-            input_seq = current_sequence.reshape(1, SEQUENCE_LENGTH, 1)
+            # Reshape for model input
+            if model_type == 'hybrid_cnn_lstm':
+                # Hybrid model needs different shape
+                n_seq = 4
+                n_steps = SEQUENCE_LENGTH // n_seq
+                input_seq = current_sequence.reshape(1, n_seq, n_steps, 1)
+            else:
+                # Standard shape for LSTM, CNN, Advanced models
+                input_seq = current_sequence.reshape(1, SEQUENCE_LENGTH, 1)
 
             # Predict next hour
             pred_scaled = model.predict(input_seq, verbose=0)[0][0]
@@ -161,11 +190,10 @@ def predict_with_model(occupancy_series, hours_ahead=6):
             current_sequence = np.roll(current_sequence, -1, axis=0)
             current_sequence[-1] = pred_scaled
 
-        logger.info(f"Model prediction: {predictions}")
         return predictions
 
     except Exception as e:
-        logger.error(f"Error in model prediction: {e}")
+        logger.error(f"Error in model prediction for {model_key}: {e}")
         return predict_simple(occupancy_series, hours_ahead)
 
 def predict_simple(occupancy_series, hours_ahead=6):
@@ -217,157 +245,117 @@ def calculate_daily_pattern(occupancy_series, days=7):
     
     return hourly_avg.to_dict('records')
 
-def generate_predictions_for_library(location):
-    """Generate complete prediction data for a library"""
-    df = load_historical_data()
+def generate_predictions_for_model_type(model_type, df=None):
+    """Generate predictions for all libraries using a specific model type"""
     if df is None:
-        return None
+        df = load_historical_data()
+        if df is None:
+            return None
 
-    # Get occupancy data
-    occupancy = get_library_occupancy(df, location if location != 'all' else None)
+    results = {}
 
-    if len(occupancy) == 0:
-        logger.warning(f"No data available for {location}")
-        return None
+    for library_id, library_name in LIBRARY_IDS.items():
+        try:
+            # Get occupancy data for this library
+            occupancy = get_library_occupancy(df, library_id)
 
-    if len(occupancy) < 24:
-        logger.warning(f"Insufficient data for {location}, only {len(occupancy)} hours available")
-        # Still continue with whatever data we have
-        pass
-    
-    # Current stats
-    current = int(occupancy.iloc[-1])
-    recent_24h = occupancy.tail(24).values
-    avg_24h = int(recent_24h.mean())
-    max_24h = int(recent_24h.max())
-    peak_today = int(occupancy.tail(24).max())
-    peak_time = occupancy.tail(24).idxmax().strftime('%I:%M %p')
-    avg_7d = int(occupancy.tail(168).mean())
-    
-    # Predictions (use trained model if available)
-    next_hour_predictions = predict_with_model(occupancy, hours_ahead=6)
-    if next_hour_predictions is None:
-        return None
-    
-    predicted_next = next_hour_predictions[0]
-    change = predicted_next - current
-    
-    # Trend
-    if len(occupancy) >= 48:
-        recent_trend = occupancy.tail(24).mean() - occupancy.tail(48).head(24).mean()
-        trend = 1 if recent_trend > 2 else -1 if recent_trend < -2 else 0
-    else:
-        trend = 0
-    
-    # Hourly data for chart (last 24 hours + predictions)
-    hourly_data = []
-    times = occupancy.tail(24).index
-    for i, t in enumerate(times):
-        hourly_data.append({
-            'time': t.strftime('%I:%M %p'),
-            'actual': int(occupancy.iloc[-(24-i)]),
-            'predicted': None
-        })
-    
-    # Add predicted hours
-    current_time = occupancy.index[-1]
-    for i, pred in enumerate(next_hour_predictions):
-        future_time = current_time + timedelta(hours=i+1)
-        hourly_data.append({
-            'time': future_time.strftime('%I:%M %p'),
-            'actual': None,
-            'predicted': pred
-        })
-    
-    # Next hours forecast
-    next_hours = []
-    for i, pred in enumerate(next_hour_predictions):
-        future_time = current_time + timedelta(hours=i+1)
-        # Simple confidence interval (±15%)
-        next_hours.append({
-            'time': future_time.strftime('%I %p'),
-            'predicted': pred,
-            'confidence_upper': int(pred * 1.15),
-            'confidence_lower': max(0, int(pred * 0.85))
-        })
-    
-    # Daily pattern
-    daily_pattern = calculate_daily_pattern(occupancy)
-    
-    # Estimate max capacity (use historical max * 1.2)
-    max_capacity = int(occupancy.max() * 1.2)
-    
-    return {
-        'location': location,
-        'current': current,
-        'predicted': predicted_next,
-        'change': change,
-        'avg_24h': avg_24h,
-        'max_24h': max_24h,
-        'max_capacity': max_capacity,
-        'peak_today': peak_today,
-        'peak_time': peak_time,
-        'avg_7d': avg_7d,
-        'trend': trend,
-        'model_accuracy': 85,  # Mock value - replace with actual R² score
-        'hourly_data': hourly_data,
-        'daily_pattern': daily_pattern,
-        'next_hours': next_hours,
-        'last_updated': datetime.now().isoformat()
-    }
+            if occupancy is None or len(occupancy) < 24:
+                logger.warning(f"Insufficient data for {library_id}")
+                continue
+
+            # Current stats
+            current = int(occupancy.iloc[-1])
+            recent_24h = occupancy.tail(24).values
+            avg_24h = int(recent_24h.mean())
+            max_24h = int(recent_24h.max())
+
+            # Predictions using specific model type
+            next_hour_predictions = predict_with_specific_model(
+                model_type, library_id, occupancy, hours_ahead=6
+            )
+
+            if next_hour_predictions is None:
+                continue
+
+            predicted_next = next_hour_predictions[0]
+            change = predicted_next - current
+
+            # Hourly data for chart (last 24 hours + predictions)
+            hourly_data = []
+            times = occupancy.tail(24).index
+            for i, t in enumerate(times):
+                hourly_data.append({
+                    'time': t.strftime('%I:%M %p'),
+                    'actual': int(occupancy.iloc[-(24-i)]),
+                    'predicted': None
+                })
+
+            # Add predicted hours
+            current_time = occupancy.index[-1]
+            for i, pred in enumerate(next_hour_predictions):
+                future_time = current_time + timedelta(hours=i+1)
+                hourly_data.append({
+                    'time': future_time.strftime('%I:%M %p'),
+                    'actual': None,
+                    'predicted': pred
+                })
+
+            # Next hours forecast
+            next_hours = []
+            for i, pred in enumerate(next_hour_predictions):
+                future_time = current_time + timedelta(hours=i+1)
+                next_hours.append({
+                    'time': future_time.strftime('%I %p'),
+                    'predicted': pred,
+                    'confidence_upper': int(pred * 1.15),
+                    'confidence_lower': max(0, int(pred * 0.85))
+                })
+
+            results[library_id] = {
+                'library_id': library_id,
+                'library_name': library_name,
+                'current': current,
+                'predicted': predicted_next,
+                'change': change,
+                'avg_24h': avg_24h,
+                'max_24h': max_24h,
+                'hourly_data': hourly_data,
+                'next_hours': next_hours
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating predictions for {library_id} with {model_type}: {e}")
+            continue
+
+    return results
 
 def update_predictions_cache():
-    """Update predictions cache for all libraries"""
+    """Update predictions cache for all model types"""
     global predictions_cache, last_update_time
-    
-    logger.info("Updating predictions cache...")
-    
+
+    logger.info("Updating predictions cache for all model types...")
+
     df = load_historical_data()
     if df is None:
         logger.error("Failed to load data")
         return
-    
-    has_location = 'Location' in df.columns
-    
+
     with cache_lock:
         new_cache = {}
-        
-        # Generate predictions for each library
-        if has_location:
-            for location in LIBRARIES:
-                try:
-                    pred = generate_predictions_for_library(location)
-                    if pred:
-                        new_cache[location] = pred
-                        logger.info(f"Updated predictions for {location}")
-                except Exception as e:
-                    logger.error(f"Error generating predictions for {location}: {e}")
-        else:
-            # Single prediction for all data
+
+        # Generate predictions for each model type
+        for model_type in MODEL_TYPES.keys():
             try:
-                pred = generate_predictions_for_library('all')
-                if pred:
-                    new_cache['all'] = pred
-                    logger.info("Updated predictions for all libraries")
+                predictions = generate_predictions_for_model_type(model_type, df)
+                if predictions:
+                    new_cache[model_type] = predictions
+                    logger.info(f"Updated predictions for {model_type}: {len(predictions)} libraries")
             except Exception as e:
-                logger.error(f"Error generating predictions: {e}")
-        
-        # Calculate overall stats
-        if new_cache:
-            total_current = sum(p['current'] for p in new_cache.values())
-            total_predicted = sum(p['predicted'] for p in new_cache.values())
-            
-            new_cache['overall'] = {
-                'total_current': total_current,
-                'total_predicted': total_predicted,
-                'total_change': total_predicted - total_current,
-                'num_locations': len(new_cache),
-                'last_updated': datetime.now().isoformat()
-            }
-        
+                logger.error(f"Error generating predictions for {model_type}: {e}")
+
         predictions_cache = new_cache
         last_update_time = datetime.now()
-        
+
         # Save cache to file
         try:
             with open(CACHE_FILE, 'wb') as f:
@@ -375,37 +363,52 @@ def update_predictions_cache():
             logger.info(f"Cache saved to {CACHE_FILE}")
         except Exception as e:
             logger.error(f"Error saving cache: {e}")
-    
+
     logger.info(f"Cache updated successfully at {last_update_time}")
 
 # ============================================
 # API ENDPOINTS
 # ============================================
 
+@app.route('/api/model-types', methods=['GET'])
+def get_model_types():
+    """Get list of available model types"""
+    return jsonify({
+        'model_types': [
+            {'id': k, 'name': v} for k, v in MODEL_TYPES.items()
+        ]
+    })
+
 @app.route('/api/predictions', methods=['GET'])
 def get_predictions():
-    """Get all predictions"""
+    """Get predictions for a specific model type (default: cnn_only)"""
+    model_type = request.args.get('model_type', 'cnn_only')
+
     with cache_lock:
         if not predictions_cache:
             return jsonify({'error': 'No predictions available'}), 503
-        
-        # Convert to format expected by frontend
-        response = {
-            'libraries': {k: v for k, v in predictions_cache.items() if k != 'overall'},
-            'overall': predictions_cache.get('overall', {}),
-            'last_updated': last_update_time.isoformat() if last_update_time else None
-        }
-        
-        return jsonify(response)
 
-@app.route('/api/predictions/<library>', methods=['GET'])
-def get_library_prediction(library):
-    """Get prediction for specific library"""
+        if model_type not in predictions_cache:
+            return jsonify({'error': f'Model type {model_type} not found'}), 404
+
+        return jsonify({
+            'model_type': model_type,
+            'model_name': MODEL_TYPES.get(model_type, model_type),
+            'libraries': predictions_cache[model_type],
+            'last_updated': last_update_time.isoformat() if last_update_time else None
+        })
+
+@app.route('/api/predictions/<model_type>/<library_id>', methods=['GET'])
+def get_specific_prediction(model_type, library_id):
+    """Get prediction for specific model type and library"""
     with cache_lock:
-        if library not in predictions_cache:
-            return jsonify({'error': f'Library {library} not found'}), 404
-        
-        return jsonify(predictions_cache[library])
+        if model_type not in predictions_cache:
+            return jsonify({'error': f'Model type {model_type} not found'}), 404
+
+        if library_id not in predictions_cache[model_type]:
+            return jsonify({'error': f'Library {library_id} not found'}), 404
+
+        return jsonify(predictions_cache[model_type][library_id])
 
 @app.route('/api/refresh', methods=['POST'])
 def force_refresh():
@@ -419,41 +422,47 @@ def get_status():
     return jsonify({
         'status': 'online',
         'last_update': last_update_time.isoformat() if last_update_time else None,
-        'num_libraries': len([k for k in predictions_cache.keys() if k != 'overall']),
+        'num_model_types': len(MODEL_TYPES),
+        'num_libraries': len(LIBRARY_IDS),
         'auto_update_enabled': scheduler.running if scheduler else False
     })
 
 @app.route('/api/libraries', methods=['GET'])
 def get_libraries():
     """Get list of available libraries"""
-    with cache_lock:
-        libraries = [k for k in predictions_cache.keys() if k != 'overall']
-        return jsonify({'libraries': libraries})
+    return jsonify({
+        'libraries': [
+            {'id': k, 'name': v} for k, v in LIBRARY_IDS.items()
+        ]
+    })
 
 @app.route('/api/models/metrics', methods=['GET'])
 def get_model_metrics():
-    """Get metrics for all trained models"""
+    """Get metrics for all trained model types"""
     try:
-        # Load metrics from training results
-        metrics_file = 'training_results/all_models_results.json'
+        # Load metrics from model_results (new format)
+        metrics_file = 'model_results/all_model_types_results.json'
         if os.path.exists(metrics_file):
             with open(metrics_file, 'r') as f:
                 metrics_data = json.load(f)
-            return jsonify({'models': metrics_data})
+            return jsonify({
+                'model_types': metrics_data,
+                'last_updated': last_update_time.isoformat() if last_update_time else None
+            })
         else:
-            return jsonify({'models': {}, 'message': 'No training metrics available. Please train models first.'})
+            return jsonify({'model_types': {}, 'message': 'No training metrics available. Please train models first.'})
     except Exception as e:
         logger.error(f"Error loading model metrics: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/models/retrain', methods=['POST'])
 def retrain_models():
-    """Trigger retraining of all models"""
+    """Trigger retraining of all model types"""
     try:
         import subprocess
         # Run training script in background
-        subprocess.Popen(['python', 'train_all_libraries.py'])
-        return jsonify({'status': 'success', 'message': 'Model training started in background'})
+        subprocess.Popen(['python', 'train_multiple_model_types.py'])
+        return jsonify({'status': 'success', 'message': 'Model training started in background for all model types'})
     except Exception as e:
         logger.error(f"Error starting training: {e}")
         return jsonify({'error': str(e)}), 500
@@ -462,14 +471,15 @@ def retrain_models():
 def home():
     """Home endpoint"""
     return jsonify({
-        'message': 'Library Occupancy Prediction API',
-        'version': '1.0',
+        'message': 'Library Occupancy Prediction API - Model Comparison',
+        'version': '2.0',
         'endpoints': {
-            'GET /api/predictions': 'Get all predictions',
-            'GET /api/predictions/<library>': 'Get prediction for specific library',
+            'GET /api/model-types': 'Get list of available model types',
+            'GET /api/predictions?model_type=<type>': 'Get predictions for all libraries using specific model type',
+            'GET /api/predictions/<model_type>/<library_id>': 'Get prediction for specific model and library',
             'GET /api/libraries': 'Get list of libraries',
-            'GET /api/models/metrics': 'Get training metrics for all models',
-            'POST /api/models/retrain': 'Retrain all models',
+            'GET /api/models/metrics': 'Get training metrics for all model types',
+            'POST /api/models/retrain': 'Retrain all model types',
             'GET /api/status': 'Get API status',
             'POST /api/refresh': 'Force refresh predictions'
         }
@@ -500,13 +510,13 @@ def start_scheduler():
 # ============================================
 
 if __name__ == '__main__':
-    # Load trained model and scaler
-    logger.info("Loading trained model...")
-    has_model = load_trained_model()
-    if has_model:
-        logger.info("✓ Using trained CNN-LSTM model for predictions")
+    # Load all trained models
+    logger.info("Loading all trained models...")
+    has_models = load_all_models()
+    if has_models:
+        logger.info(f"✓ Loaded {len(models_cache)} models for predictions")
     else:
-        logger.info("→ Using simple statistical predictions (no trained model)")
+        logger.warning("→ No trained models loaded, predictions may use simple statistical methods")
 
     # Load cache from file if exists
     if os.path.exists(CACHE_FILE):
@@ -523,7 +533,7 @@ if __name__ == '__main__':
 
     # Start scheduler
     start_scheduler()
-    
+
     # Run Flask app
     logger.info("Starting Flask API server...")
     app.run(host='0.0.0.0', port=5000, debug=False)
