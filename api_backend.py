@@ -29,15 +29,20 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 CLEANED_DATA_FILE = 'all_data_cleaned.csv'
-MODEL_PATH = 'saved_models'
-SCALER_PATH = 'saved_scalers'
+MODEL_FILE = 'saved_models/cnn_lstm_model.keras'
+SCALER_FILE = 'saved_scalers/occupancy_scaler.pkl'
 CACHE_FILE = 'predictions_cache.pkl'
 UPDATE_INTERVAL = 60  # seconds
+SEQUENCE_LENGTH = 24  # Must match training
 
 # Global cache for predictions
 predictions_cache = {}
 last_update_time = None
 cache_lock = threading.Lock()
+
+# Global model and scaler
+model = None
+scaler = None
 
 # Library configurations
 LIBRARIES = [
@@ -50,6 +55,41 @@ LIBRARIES = [
 ]
 
 # ============================================
+# MODEL LOADING
+# ============================================
+
+def load_trained_model():
+    """Load the trained CNN-LSTM model and scaler"""
+    global model, scaler
+
+    try:
+        if os.path.exists(MODEL_FILE):
+            logger.info(f"Loading trained model from {MODEL_FILE}...")
+            model = load_model(MODEL_FILE)
+            logger.info("✓ Model loaded successfully")
+        else:
+            logger.warning(f"Model file not found: {MODEL_FILE}")
+            logger.warning("Will use simple statistical prediction instead")
+            model = None
+
+        if os.path.exists(SCALER_FILE):
+            logger.info(f"Loading scaler from {SCALER_FILE}...")
+            with open(SCALER_FILE, 'rb') as f:
+                scaler = pickle.load(f)
+            logger.info("✓ Scaler loaded successfully")
+        else:
+            logger.warning(f"Scaler file not found: {SCALER_FILE}")
+            scaler = None
+
+        return model is not None and scaler is not None
+
+    except Exception as e:
+        logger.error(f"Error loading model: {e}")
+        model = None
+        scaler = None
+        return False
+
+# ============================================
 # PREDICTION FUNCTIONS
 # ============================================
 
@@ -57,8 +97,13 @@ def load_historical_data():
     """Load and process historical data"""
     try:
         df = pd.read_csv(CLEANED_DATA_FILE)
+        logger.info(f"Loaded {len(df)} rows from {CLEANED_DATA_FILE}")
+        logger.info(f"Columns: {df.columns.tolist()}")
+
         df['Start_dt'] = pd.to_datetime(df['Start_dt'])
         df.set_index('Start_dt', inplace=True)
+
+        logger.info(f"Date range: {df.index.min()} to {df.index.max()}")
         return df
     except Exception as e:
         logger.error(f"Error loading data: {e}")
@@ -68,34 +113,89 @@ def get_library_occupancy(df, location=None, hours=168):
     """Get occupancy time series for a library"""
     if location and 'Location' in df.columns:
         df = df[df['Location'] == location]
-    
+
     occupancy = df['Client MAC'].resample('h').nunique()
     occupancy = occupancy.fillna(0)
+
+    logger.info(f"Generated occupancy series: {len(occupancy)} hours, min={occupancy.min()}, max={occupancy.max()}, current={occupancy.iloc[-1] if len(occupancy) > 0 else 'N/A'}")
+
     return occupancy.tail(hours)
 
+def predict_with_model(occupancy_series, hours_ahead=6):
+    """Predict using trained CNN-LSTM model"""
+    global model, scaler
+
+    if model is None or scaler is None:
+        logger.warning("Model or scaler not loaded, using simple prediction")
+        return predict_simple(occupancy_series, hours_ahead)
+
+    if len(occupancy_series) < SEQUENCE_LENGTH:
+        logger.warning(f"Need at least {SEQUENCE_LENGTH} hours, have {len(occupancy_series)}, using simple prediction")
+        return predict_simple(occupancy_series, hours_ahead)
+
+    try:
+        # Get the last SEQUENCE_LENGTH hours
+        recent_data = occupancy_series.tail(SEQUENCE_LENGTH).values.reshape(-1, 1)
+
+        # Scale the data
+        scaled_data = scaler.transform(recent_data)
+
+        # Make predictions
+        predictions = []
+        current_sequence = scaled_data.copy()
+
+        for _ in range(hours_ahead):
+            # Reshape for model input: (1, SEQUENCE_LENGTH, 1)
+            input_seq = current_sequence.reshape(1, SEQUENCE_LENGTH, 1)
+
+            # Predict next hour
+            pred_scaled = model.predict(input_seq, verbose=0)[0][0]
+
+            # Inverse transform to get actual value
+            pred_actual = scaler.inverse_transform([[pred_scaled]])[0][0]
+            pred_actual = max(0, int(pred_actual))
+            predictions.append(pred_actual)
+
+            # Update sequence for next prediction
+            current_sequence = np.roll(current_sequence, -1, axis=0)
+            current_sequence[-1] = pred_scaled
+
+        logger.info(f"Model prediction: {predictions}")
+        return predictions
+
+    except Exception as e:
+        logger.error(f"Error in model prediction: {e}")
+        return predict_simple(occupancy_series, hours_ahead)
+
 def predict_simple(occupancy_series, hours_ahead=6):
-    """Simple prediction using moving average with trend"""
-    if len(occupancy_series) < 24:
+    """Simple prediction using moving average with trend (fallback)"""
+    if len(occupancy_series) == 0:
         return None
-    
+
     predictions = []
-    recent_24h = occupancy_series.tail(24).values
-    
+
     # Calculate trend
     if len(occupancy_series) >= 48:
         older_avg = occupancy_series.tail(48).head(24).mean()
         recent_avg = occupancy_series.tail(24).mean()
         trend = (recent_avg - older_avg) / 24  # hourly trend
+    elif len(occupancy_series) >= 12:
+        # Use half the available data for trend
+        half = len(occupancy_series) // 2
+        older_avg = occupancy_series.head(half).mean()
+        recent_avg = occupancy_series.tail(half).mean()
+        trend = (recent_avg - older_avg) / half
     else:
         trend = 0
-    
+
     # Generate predictions
     current = occupancy_series.iloc[-1]
     for i in range(1, hours_ahead + 1):
         predicted = current + (trend * i)
         predicted = max(0, int(predicted))
         predictions.append(predicted)
-    
+
+    logger.info(f"Simple prediction: {predictions}")
     return predictions
 
 def calculate_daily_pattern(occupancy_series, days=7):
@@ -121,13 +221,18 @@ def generate_predictions_for_library(location):
     df = load_historical_data()
     if df is None:
         return None
-    
+
     # Get occupancy data
     occupancy = get_library_occupancy(df, location if location != 'all' else None)
-    
-    if len(occupancy) < 24:
-        logger.warning(f"Insufficient data for {location}")
+
+    if len(occupancy) == 0:
+        logger.warning(f"No data available for {location}")
         return None
+
+    if len(occupancy) < 24:
+        logger.warning(f"Insufficient data for {location}, only {len(occupancy)} hours available")
+        # Still continue with whatever data we have
+        pass
     
     # Current stats
     current = int(occupancy.iloc[-1])
@@ -138,8 +243,8 @@ def generate_predictions_for_library(location):
     peak_time = occupancy.tail(24).idxmax().strftime('%I:%M %p')
     avg_7d = int(occupancy.tail(168).mean())
     
-    # Predictions
-    next_hour_predictions = predict_simple(occupancy, hours_ahead=6)
+    # Predictions (use trained model if available)
+    next_hour_predictions = predict_with_model(occupancy, hours_ahead=6)
     if next_hour_predictions is None:
         return None
     
@@ -364,6 +469,14 @@ def start_scheduler():
 # ============================================
 
 if __name__ == '__main__':
+    # Load trained model and scaler
+    logger.info("Loading trained model...")
+    has_model = load_trained_model()
+    if has_model:
+        logger.info("✓ Using trained CNN-LSTM model for predictions")
+    else:
+        logger.info("→ Using simple statistical predictions (no trained model)")
+
     # Load cache from file if exists
     if os.path.exists(CACHE_FILE):
         try:
@@ -372,11 +485,11 @@ if __name__ == '__main__':
             logger.info("Loaded predictions from cache file")
         except Exception as e:
             logger.error(f"Error loading cache: {e}")
-    
+
     # Initial update
     logger.info("Performing initial prediction update...")
     update_predictions_cache()
-    
+
     # Start scheduler
     start_scheduler()
     

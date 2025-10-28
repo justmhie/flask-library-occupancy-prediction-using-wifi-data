@@ -95,8 +95,13 @@ const SimpleDashboard = () => {
   // Get data for selected library
   const getLibraryData = () => {
     if (!data) return null;
-    if (selectedLibrary === 'all') return data.overall;
-    return data.libraries[selectedLibrary] || data.overall;
+    if (!data.libraries) return null;
+
+    // Backend returns data in libraries.all for overall
+    if (selectedLibrary === 'all') {
+      return data.libraries.all || data.overall;
+    }
+    return data.libraries[selectedLibrary] || data.libraries.all;
   };
 
   const libraryData = getLibraryData();
@@ -216,14 +221,14 @@ const SimpleDashboard = () => {
             />
             <StatCard
               title="24h Average"
-              value={libraryData.avg24h || 0}
+              value={libraryData.avg_24h || libraryData.avg24h || 0}
               subtitle="Average users"
               icon="📊"
               color="#f093fb"
             />
             <StatCard
               title="Capacity"
-              value={`${Math.round((libraryData.capacity || 0) * 100)}%`}
+              value={libraryData.max_capacity ? `${Math.round((libraryData.current / libraryData.max_capacity) * 100)}%` : 'N/A'}
               subtitle="Of maximum"
               icon="📈"
               color="#4facfe"
@@ -232,7 +237,7 @@ const SimpleDashboard = () => {
         )}
 
         {/* Charts */}
-        {libraryData && libraryData.hourlyData && (
+        {libraryData && (libraryData.hourly_data || libraryData.hourlyData) && (
           <div style={{
             background: 'white',
             borderRadius: '12px',
@@ -244,7 +249,7 @@ const SimpleDashboard = () => {
               📈 Hourly Occupancy Trend (Last 24 Hours)
             </h2>
             <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={libraryData.hourlyData}>
+              <AreaChart data={libraryData.hourly_data || libraryData.hourlyData}>
                 <defs>
                   <linearGradient id="colorUsers" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#667eea" stopOpacity={0.8}/>
@@ -258,10 +263,19 @@ const SimpleDashboard = () => {
                 <Legend />
                 <Area
                   type="monotone"
-                  dataKey="users"
+                  dataKey="actual"
                   stroke="#667eea"
                   fillOpacity={1}
                   fill="url(#colorUsers)"
+                  name="Actual Users"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="predicted"
+                  stroke="#f093fb"
+                  strokeDasharray="5 5"
+                  fillOpacity={0}
+                  name="Predicted"
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -269,7 +283,7 @@ const SimpleDashboard = () => {
         )}
 
         {/* Daily Pattern */}
-        {libraryData && libraryData.dailyPattern && (
+        {libraryData && (libraryData.daily_pattern || libraryData.dailyPattern) && (
           <div style={{
             background: 'white',
             borderRadius: '12px',
@@ -281,20 +295,20 @@ const SimpleDashboard = () => {
               📊 Daily Usage Pattern (Average by Hour)
             </h2>
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={libraryData.dailyPattern}>
+              <BarChart data={libraryData.daily_pattern || libraryData.dailyPattern}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="hour" />
                 <YAxis />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="avgUsers" fill="#764ba2" />
+                <Bar dataKey="average" fill="#764ba2" name="Average Users" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
 
         {/* Forecast */}
-        {libraryData && libraryData.forecast && (
+        {libraryData && (libraryData.next_hours || libraryData.forecast) && (
           <div style={{
             background: 'white',
             borderRadius: '12px',
@@ -305,15 +319,15 @@ const SimpleDashboard = () => {
               🔮 Next 6 Hours Forecast
             </h2>
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={libraryData.forecast}>
+              <LineChart data={libraryData.next_hours || libraryData.forecast}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="hour" />
+                <XAxis dataKey="time" />
                 <YAxis />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="predicted" stroke="#667eea" strokeWidth={3} />
-                <Line type="monotone" dataKey="lower" stroke="#cbd5e0" strokeDasharray="5 5" />
-                <Line type="monotone" dataKey="upper" stroke="#cbd5e0" strokeDasharray="5 5" />
+                <Line type="monotone" dataKey="predicted" stroke="#667eea" strokeWidth={3} name="Predicted" />
+                <Line type="monotone" dataKey="confidence_lower" stroke="#cbd5e0" strokeDasharray="5 5" name="Lower Bound" />
+                <Line type="monotone" dataKey="confidence_upper" stroke="#cbd5e0" strokeDasharray="5 5" name="Upper Bound" />
               </LineChart>
             </ResponsiveContainer>
           </div>
