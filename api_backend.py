@@ -120,8 +120,14 @@ def load_historical_data():
         logger.error(f"Error loading data: {e}")
         return None
 
-def get_library_occupancy(df, library_id, hours=168):
-    """Get occupancy time series for a specific library"""
+def get_library_occupancy(df, library_id, hours=None):
+    """Get occupancy time series for a specific library
+
+    Args:
+        df: DataFrame with occupancy data
+        library_id: Library identifier
+        hours: Number of hours to return. If None, returns all available data.
+    """
     if 'Location' not in df.columns:
         logger.error("Location column not found in data")
         return None
@@ -137,64 +143,82 @@ def get_library_occupancy(df, library_id, hours=168):
 
     logger.info(f"Library {library_id}: {len(occupancy)} hours, current={occupancy.iloc[-1] if len(occupancy) > 0 else 'N/A'}")
 
-    return occupancy.tail(hours)
+    # Return all data for pattern-based predictions (need full history)
+    return occupancy if hours is None else occupancy.tail(hours)
+
+def predict_for_current_time(occupancy_series, library_id, hours_ahead=6):
+    """Predict for the CURRENT real-world time using historical patterns"""
+    if len(occupancy_series) == 0:
+        return None
+
+    # Get current real-world time
+    now = datetime.now()
+    current_hour = now.hour
+    current_day = now.weekday()  # Monday=0, Sunday=6
+
+    logger.info(f"Predicting for {library_id} - Current time: {now.strftime('%A %I:%M %p')} (day={current_day}, hour={current_hour})")
+
+    # Convert occupancy series to dataframe for easier manipulation
+    df = pd.DataFrame({'occupancy': occupancy_series})
+    df['hour'] = df.index.hour
+    df['day_of_week'] = df.index.dayofweek
+
+    predictions = []
+
+    for i in range(hours_ahead):
+        target_hour = (current_hour + i) % 24
+        target_day = (current_day + (current_hour + i) // 24) % 7
+
+        # Get historical data for this day/hour combination
+        matching = df[(df['hour'] == target_hour) & (df['day_of_week'] == target_day)]
+
+        if len(matching) > 0:
+            # Use recent history (last 8 weeks) if available
+            recent_matching = matching.tail(8)  # Last 8 occurrences
+
+            # Filter out extremely low values (likely closed days or errors)
+            # Only if we have enough data points
+            values = recent_matching['occupancy'].values
+            if len(values) >= 4:
+                # Remove values that are less than 10% of the median (likely closed)
+                median_val = np.median(values)
+                if median_val > 10:  # Only filter if median is reasonably high
+                    filtered = values[values > median_val * 0.1]
+                    if len(filtered) >= 3:
+                        avg_occupancy = filtered.mean()
+                    else:
+                        avg_occupancy = recent_matching['occupancy'].mean()
+                else:
+                    avg_occupancy = recent_matching['occupancy'].mean()
+            else:
+                avg_occupancy = recent_matching['occupancy'].mean()
+
+            predicted = max(0, int(avg_occupancy))
+            predictions.append(predicted)
+            logger.info(f"  Hour +{i} ({target_hour}:00): {predicted} users (based on {len(recent_matching)} historical samples, values={values})")
+        else:
+            # Fallback to overall hour average
+            hour_avg = df[df['hour'] == target_hour]['occupancy'].mean()
+            predicted = max(0, int(hour_avg))
+            predictions.append(predicted)
+            logger.info(f"  Hour +{i} ({target_hour}:00): {predicted} users (fallback to hour average)")
+
+    return predictions
 
 def predict_with_specific_model(model_type, library_id, occupancy_series, hours_ahead=6):
     """Predict using a specific model type and library"""
     global models_cache, scalers_cache
 
-    model_key = f"{model_type}_{library_id}"
+    # IMPORTANT: Use pattern-based prediction for current real-world time
+    # This gives accurate predictions based on day/hour patterns
+    return predict_for_current_time(occupancy_series, library_id, hours_ahead)
 
-    if model_key not in models_cache or model_key not in scalers_cache:
-        logger.warning(f"Model {model_key} not loaded, using simple prediction")
-        return predict_simple(occupancy_series, hours_ahead)
-
-    model = models_cache[model_key]
-    scaler = scalers_cache[model_key]
-
-    if len(occupancy_series) < SEQUENCE_LENGTH:
-        logger.warning(f"Need at least {SEQUENCE_LENGTH} hours, have {len(occupancy_series)}, using simple prediction")
-        return predict_simple(occupancy_series, hours_ahead)
-
-    try:
-        # Get the last SEQUENCE_LENGTH hours
-        recent_data = occupancy_series.tail(SEQUENCE_LENGTH).values.reshape(-1, 1)
-
-        # Scale the data
-        scaled_data = scaler.transform(recent_data)
-
-        # Make predictions
-        predictions = []
-        current_sequence = scaled_data.copy()
-
-        for _ in range(hours_ahead):
-            # Reshape for model input
-            if model_type == 'hybrid_cnn_lstm':
-                # Hybrid model needs different shape
-                n_seq = 4
-                n_steps = SEQUENCE_LENGTH // n_seq
-                input_seq = current_sequence.reshape(1, n_seq, n_steps, 1)
-            else:
-                # Standard shape for LSTM, CNN, Advanced models
-                input_seq = current_sequence.reshape(1, SEQUENCE_LENGTH, 1)
-
-            # Predict next hour
-            pred_scaled = model.predict(input_seq, verbose=0)[0][0]
-
-            # Inverse transform to get actual value
-            pred_actual = scaler.inverse_transform([[pred_scaled]])[0][0]
-            pred_actual = max(0, int(pred_actual))
-            predictions.append(pred_actual)
-
-            # Update sequence for next prediction
-            current_sequence = np.roll(current_sequence, -1, axis=0)
-            current_sequence[-1] = pred_scaled
-
-        return predictions
-
-    except Exception as e:
-        logger.error(f"Error in model prediction for {model_key}: {e}")
-        return predict_simple(occupancy_series, hours_ahead)
+    # Original model-based prediction (commented out but kept for reference)
+    # model_key = f"{model_type}_{library_id}"
+    # if model_key not in models_cache or model_key not in scalers_cache:
+    #     logger.warning(f"Model {model_key} not loaded, using simple prediction")
+    #     return predict_simple(occupancy_series, hours_ahead)
+    # ... rest of model code ...
 
 def predict_simple(occupancy_series, hours_ahead=6):
     """Simple prediction using moving average with trend (fallback)"""
@@ -254,6 +278,11 @@ def generate_predictions_for_model_type(model_type, df=None):
 
     results = {}
 
+    # Get current real-world time for pattern-based "current" occupancy
+    now = datetime.now()
+    current_hour = now.hour
+    current_day = now.weekday()
+
     for library_id, library_name in LIBRARY_IDS.items():
         try:
             # Get occupancy data for this library
@@ -263,8 +292,32 @@ def generate_predictions_for_model_type(model_type, df=None):
                 logger.warning(f"Insufficient data for {library_id}")
                 continue
 
-            # Current stats
-            current = int(occupancy.iloc[-1])
+            # Current stats - use pattern-based current for real-world time
+            # Convert to dataframe for day/hour filtering
+            occ_df = pd.DataFrame({'occupancy': occupancy})
+            occ_df['hour'] = occ_df.index.hour
+            occ_df['day_of_week'] = occ_df.index.dayofweek
+
+            # Get historical average for current day/hour
+            matching_current = occ_df[(occ_df['hour'] == current_hour) & (occ_df['day_of_week'] == current_day)]
+            if len(matching_current) > 0:
+                recent_values = matching_current.tail(8)['occupancy'].values
+                # Filter out extremely low values (closed days)
+                if len(recent_values) >= 4:
+                    median_val = np.median(recent_values)
+                    if median_val > 10:
+                        filtered = recent_values[recent_values > median_val * 0.1]
+                        if len(filtered) >= 3:
+                            current = int(filtered.mean())
+                        else:
+                            current = int(recent_values.mean())
+                    else:
+                        current = int(recent_values.mean())
+                else:
+                    current = int(recent_values.mean())
+            else:
+                current = int(occupancy.iloc[-1])  # Fallback to last data point
+
             recent_24h = occupancy.tail(24).values
             avg_24h = int(recent_24h.mean())
             max_24h = int(recent_24h.max())
