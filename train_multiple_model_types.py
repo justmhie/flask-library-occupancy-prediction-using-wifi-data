@@ -24,6 +24,7 @@ import sys
 import io
 from datetime import datetime
 from ap_location_mapping import AP_LOCATION_MAP, LIBRARY_NAMES, get_location_from_ap
+from shap_analysis import create_comprehensive_shap_analysis
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
@@ -52,6 +53,7 @@ os.makedirs('saved_models', exist_ok=True)
 os.makedirs('saved_scalers', exist_ok=True)
 os.makedirs('model_results', exist_ok=True)
 os.makedirs('model_results/plots', exist_ok=True)
+os.makedirs('model_results/shap', exist_ok=True)
 
 # ============================================
 # HELPER FUNCTIONS
@@ -263,6 +265,17 @@ for model_type in MODEL_TYPES:
         with open(scaler_path, 'wb') as f:
             pickle.dump(scaler, f)
 
+        # Run SHAP Analysis
+        print(f"    Running SHAP analysis...")
+        shap_results = create_comprehensive_shap_analysis(
+            model=model,
+            X_train=X_train,
+            X_test=X_test,
+            model_name=model_name,
+            location_name=location_name,
+            output_dir='model_results/shap'
+        )
+
         # Store results
         model_results[location_id] = {
             'library_name': location_name,
@@ -274,7 +287,8 @@ for model_type in MODEL_TYPES:
                 'max_occupancy': int(occupancy.max())
             },
             'model_path': model_path,
-            'scaler_path': scaler_path
+            'scaler_path': scaler_path,
+            'shap_analysis': shap_results
         }
 
     all_results[model_type] = {

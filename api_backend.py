@@ -4,7 +4,7 @@ Serves real-time predictions to React dashboard
 Includes automatic updates
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
@@ -520,12 +520,57 @@ def retrain_models():
         logger.error(f"Error starting training: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/shap/results', methods=['GET'])
+def get_shap_results():
+    """Get SHAP analysis results for all models"""
+    try:
+        results_path = 'model_results/all_model_types_results.json'
+        if os.path.exists(results_path):
+            with open(results_path, 'r') as f:
+                results = json.load(f)
+            return jsonify(results)
+        else:
+            return jsonify({'error': 'SHAP results not available. Please train models first.'}), 404
+    except Exception as e:
+        logger.error(f"Error loading SHAP results: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/shap/images/<filename>', methods=['GET'])
+def get_shap_image(filename):
+    """Serve SHAP visualization images"""
+    try:
+        image_path = os.path.join('model_results', 'shap', filename)
+        if os.path.exists(image_path):
+            return send_file(image_path, mimetype='image/png')
+        else:
+            # Return a placeholder image or 404
+            logger.warning(f"SHAP image not found: {filename}")
+            return jsonify({'error': 'Image not found'}), 404
+    except Exception as e:
+        logger.error(f"Error serving SHAP image {filename}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/shap/report', methods=['GET'])
+def get_shap_report():
+    """Get SHAP analysis text report"""
+    try:
+        report_path = 'model_results/shap/SHAP_ANALYSIS_REPORT.txt'
+        if os.path.exists(report_path):
+            with open(report_path, 'r') as f:
+                report = f.read()
+            return jsonify({'report': report})
+        else:
+            return jsonify({'error': 'SHAP report not available'}), 404
+    except Exception as e:
+        logger.error(f"Error loading SHAP report: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/', methods=['GET'])
 def home():
     """Home endpoint"""
     return jsonify({
-        'message': 'Library Occupancy Prediction API - Model Comparison',
-        'version': '2.0',
+        'message': 'Library Occupancy Prediction API - Model Comparison with SHAP Analysis',
+        'version': '2.1',
         'endpoints': {
             'GET /api/model-types': 'Get list of available model types',
             'GET /api/predictions?model_type=<type>': 'Get predictions for all libraries using specific model type',
@@ -534,7 +579,10 @@ def home():
             'GET /api/models/metrics': 'Get training metrics for all model types',
             'POST /api/models/retrain': 'Retrain all model types',
             'GET /api/status': 'Get API status',
-            'POST /api/refresh': 'Force refresh predictions'
+            'POST /api/refresh': 'Force refresh predictions',
+            'GET /api/shap/results': 'Get SHAP analysis results',
+            'GET /api/shap/images/<filename>': 'Get SHAP visualization image',
+            'GET /api/shap/report': 'Get SHAP analysis text report'
         }
     })
 
