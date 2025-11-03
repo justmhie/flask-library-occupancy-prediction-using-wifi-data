@@ -1,0 +1,31 @@
+{
+  "ablated_model": {
+    "description": "CNN-LSTM with Attention (NO auxiliary features)",
+    "features": "Sequence only (24 hours)",
+    "metrics": {
+      "r2": 0.9662313989267767,
+      "mse": 57.754335907928414,
+      "rmse": 7.599627353227816,
+      "mae": 2.9097239326674136,
+      "mape": 51.66213547774596
+    },
+    "parameters": 44626
+  },
+  "full_model": {
+    "description": "CNN-LSTM with Attention + Auxiliary Features",
+    "features": "Sequence (24 hours) + hour + day_of_week + is_weekend",
+    "metrics": {
+      "r2": 0.03379047996894413,
+      "mse": 1652.5052090937977,
+      "rmse": 40.65101731929716,
+      "mae": 26.711409796438765,
+      "mape": 1428.2119791654911
+    },
+    "parameters": 44701
+  },
+  "improvement": {
+    "rmse_reduction_percent": -434.9080346950343,
+    "mae_reduction_percent": -818.0049521726198,
+    "r2_increase_percent": -96.50285842434056
+  }
+}
