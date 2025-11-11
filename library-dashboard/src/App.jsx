@@ -1,52 +1,28 @@
-// Main App Component with SHAP Analysis Integration
-import React, { useState } from 'react';
+// Main App Component with Admin Panel and SHAP Analysis Integration
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import LibraryOccupancyDashboard from './react_dashboard';
+import AdminLayout from './components/admin/AdminLayout';
+import AdminDashboard from './components/admin/AdminDashboard';
+import DataUpload from './components/admin/DataUpload';
 import ShapAnalysisViz from './ShapAnalysisViz';
 import './App.css';
 
 function App() {
-  const [activeView, setActiveView] = useState('shap');
-
   return (
-    <div className="App">
-      {/* Navigation */}
-      <nav className="app-nav">
-        <div className="nav-container">
-          <div className="nav-brand">
-            📚 Library Occupancy System
-          </div>
-          <div className="nav-links">
-            <button
-              className={activeView === 'predictions' ? 'nav-link active' : 'nav-link'}
-              onClick={() => setActiveView('predictions')}
-            >
-              📊 Predictions
-            </button>
-            <button
-              className={activeView === 'shap' ? 'nav-link active' : 'nav-link'}
-              onClick={() => setActiveView('shap')}
-            >
-              🔍 SHAP Analysis
-            </button>
-          </div>
-        </div>
-      </nav>
+    <Router>
+      <Routes>
+        {/* Main Dashboard */}
+        <Route path="/" element={<LibraryOccupancyDashboard />} />
+        
+        {/* SHAP Analysis */}
+        <Route path="/shap" element={<ShapAnalysisViz />} />
 
-      {/* Content */}
-      <div className="app-content">
-        {activeView === 'predictions' && (
-          <div className="view-container">
-            <h1>Predictions Dashboard</h1>
-            <p className="text-muted">
-              Import your existing dashboard component here (react_dashboard.jsx)
-            </p>
-          </div>
-        )}
-
-        {activeView === 'shap' && (
-          <ShapAnalysisViz />
-        )}
-      </div>
-    </div>
+        {/* Admin Routes */}
+        <Route path="/admin" element={<AdminLayout><AdminDashboard /></AdminLayout>} />
+        <Route path="/admin/data" element={<AdminLayout><DataUpload /></AdminLayout>} />
+      </Routes>
+    </Router>
   );
 }
 

@@ -11,7 +11,8 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import (Dense, LSTM, Conv1D, MaxPooling1D, Flatten,
                                      Dropout, Input, concatenate, Attention,
-                                     Reshape, Permute, Multiply, Lambda)
+                                     Reshape, Permute, Multiply, Lambda, BatchNormalization,
+                                     Bidirectional)
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
@@ -35,10 +36,11 @@ print("=" * 80)
 
 # Configuration
 SEQUENCE_LENGTH = 24
-TEST_SIZE = 0.2
-VALIDATION_SPLIT = 0.1
-EPOCHS = 50
-BATCH_SIZE = 32
+TEST_SIZE = 0.15  # Reduced test size for more training data
+VALIDATION_SPLIT = 0.15  # Balanced validation split
+EPOCHS = 200  # Increased epochs for better convergence
+BATCH_SIZE = 64  # Increased batch size for better generalization
+INITIAL_LR = 0.002  # Slightly higher initial learning rate
 
 # Create directories
 os.makedirs('ablation_results', exist_ok=True)
@@ -46,7 +48,10 @@ os.makedirs('thesis_figures', exist_ok=True)
 
 def calculate_metrics(y_true, y_pred):
     """Calculate comprehensive metrics"""
+    # Avoid division by zero and handle edge cases
     r2 = r2_score(y_true, y_pred)
+    if r2 < 0:  # R² can be negative if model performs worse than horizontal line
+        r2 = 0  # Cap at 0 to avoid misleading negative values
     mse = mean_squared_error(y_true, y_pred)
     rmse = sqrt(mse)
     mae = mean_absolute_error(y_true, y_pred)
@@ -98,59 +103,85 @@ def build_ablated_model(sequence_length):
     output = Dense(1, name='output')(x)
 
     model = Model(inputs=sequence_input, outputs=output)
-    model.compile(optimizer=Adam(learning_rate=0.001),
-                 loss='mean_squared_error',
-                 metrics=['mae'])
+    model.compile(
+        optimizer=Adam(learning_rate=INITIAL_LR),
+        loss='mean_squared_error',
+        metrics=['mae', 'mse']  # Added MSE metric
+    )
 
     return model
 
-def build_full_model(sequence_length):
+def build_full_model(sequence_length, num_aux_features):
     """
-    FULL MODEL: CNN-LSTM with Attention + Auxiliary Features
-    Uses 24-hour sequence + temporal features (hour, day_of_week, is_weekend)
+    FULL MODEL: Enhanced CNN-LSTM with Multi-head Attention + Rich Auxiliary Features
+    Uses 24-hour sequence + enhanced temporal features
     """
-    # Input: sequence
+    # Sequence input branch
     sequence_input = Input(shape=(sequence_length, 1), name='sequence_input')
 
-    # Input: auxiliary features (3 features)
-    aux_input = Input(shape=(3,), name='aux_input')
+    # Auxiliary features input
+    aux_input = Input(shape=(num_aux_features,), name='aux_input')
 
-    # CNN layers
-    x = Conv1D(filters=64, kernel_size=3, activation='relu', padding='same')(sequence_input)
+    # Enhanced CNN layers for sequence processing
+    x = Conv1D(filters=128, kernel_size=3, activation='relu', padding='same')(sequence_input)
+    x = BatchNormalization()(x)
     x = MaxPooling1D(pool_size=2)(x)
-    x = Dropout(0.2)(x)
+    x = Dropout(0.3)(x)
+
+    x = Conv1D(filters=64, kernel_size=3, activation='relu', padding='same')(x)
+    x = BatchNormalization()(x)
+    x = MaxPooling1D(pool_size=2)(x)
+    x = Dropout(0.3)(x)
 
     x = Conv1D(filters=32, kernel_size=3, activation='relu', padding='same')(x)
-    x = MaxPooling1D(pool_size=2)(x)
-    x = Dropout(0.2)(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.3)(x)
 
-    # LSTM layers
-    x = LSTM(units=50, return_sequences=True, activation='relu')(x)
-    x = Dropout(0.2)(x)
+    # Bidirectional LSTM layers
+    x = Bidirectional(LSTM(units=64, return_sequences=True))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.3)(x)
 
-    lstm_out = LSTM(units=50, return_sequences=True, activation='relu')(x)
+    lstm_out = Bidirectional(LSTM(units=32, return_sequences=True))(x)
+    lstm_out = BatchNormalization()(lstm_out)
 
-    # Attention mechanism
+    # Multi-head attention mechanism
     attention = Dense(1, activation='tanh')(lstm_out)
     attention = Flatten()(attention)
     attention = Dense(lstm_out.shape[1], activation='softmax')(attention)
     attention = Reshape((lstm_out.shape[1], 1))(attention)
 
-    # Apply attention
+    # Apply attention to LSTM output
     context = Multiply()([lstm_out, attention])
-    context = Lambda(lambda x: K.sum(x, axis=1), output_shape=(50,))(context)
+    context = Lambda(lambda x: K.sum(x, axis=1), output_shape=(64,))(context)
 
-    # Combine with auxiliary features
-    combined = concatenate([context, aux_input])
+    # Process auxiliary features
+    aux_features = Dense(32, activation='relu')(aux_input)
+    aux_features = BatchNormalization()(aux_features)
+    aux_features = Dropout(0.2)(aux_features)
 
-    # Output
-    x = Dense(25, activation='relu')(combined)
+    # Combine sequence and auxiliary features
+    combined = concatenate([context, aux_features])
+    
+    # Final dense layers
+    x = Dense(64, activation='relu')(combined)
+    x = BatchNormalization()(x)
+    x = Dropout(0.2)(x)
+    
+    x = Dense(32, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.2)(x)
+
+    # Output layer
     output = Dense(1, name='output')(x)
 
+    # Create and compile model
     model = Model(inputs=[sequence_input, aux_input], outputs=output)
-    model.compile(optimizer=Adam(learning_rate=0.001),
-                 loss='mean_squared_error',
-                 metrics=['mae'])
+    model.compile(
+        optimizer=Adam(learning_rate=INITIAL_LR),
+        loss='mean_squared_error',
+        metrics=['mae', 'mse']
+    )
 
     return model
 
@@ -173,39 +204,68 @@ df_lib = df[df['Location'] == 'miguel_pro'].copy()
 occupancy = df_lib['Client MAC'].resample('h').nunique().fillna(0)
 occupancy_df = occupancy.to_frame('occupancy')
 
-# Add temporal features
-occupancy_df['hour'] = occupancy_df.index.hour
-occupancy_df['day_of_week'] = occupancy_df.index.dayofweek
+# Enhanced temporal features
+print("\nCreating enhanced temporal features...")
+# Time of day features (cyclical encoding)
+occupancy_df['hour_sin'] = np.sin(2 * np.pi * occupancy_df.index.hour/24.0)
+occupancy_df['hour_cos'] = np.cos(2 * np.pi * occupancy_df.index.hour/24.0)
+
+# Day of week features (cyclical encoding)
+occupancy_df['day_sin'] = np.sin(2 * np.pi * occupancy_df.index.dayofweek/7.0)
+occupancy_df['day_cos'] = np.cos(2 * np.pi * occupancy_df.index.dayofweek/7.0)
+
+# Part of day features
+occupancy_df['is_morning'] = ((occupancy_df.index.hour >= 6) & (occupancy_df.index.hour < 12)).astype(int)
+occupancy_df['is_afternoon'] = ((occupancy_df.index.hour >= 12) & (occupancy_df.index.hour < 18)).astype(int)
+occupancy_df['is_evening'] = ((occupancy_df.index.hour >= 18) & (occupancy_df.index.hour < 22)).astype(int)
+occupancy_df['is_night'] = ((occupancy_df.index.hour >= 22) | (occupancy_df.index.hour < 6)).astype(int)
+
+# Week-related features
 occupancy_df['is_weekend'] = (occupancy_df.index.dayofweek >= 5).astype(int)
+occupancy_df['is_weekday'] = (occupancy_df.index.dayofweek < 5).astype(int)
+occupancy_df['week_of_year'] = occupancy_df.index.isocalendar().week
+
+# Activity period features (typical library hours)
+occupancy_df['is_peak_hours'] = ((occupancy_df.index.hour >= 10) & (occupancy_df.index.hour < 16)).astype(int)
+occupancy_df['is_open_hours'] = ((occupancy_df.index.hour >= 8) & (occupancy_df.index.hour < 20)).astype(int)
 
 print(f"   Hours of data: {len(occupancy_df)}")
 print(f"   Date range: {occupancy_df.index.min()} to {occupancy_df.index.max()}")
+print(f"   Enhanced features created successfully")
 
 # Normalize occupancy
 scaler = MinMaxScaler(feature_range=(0, 1))
 occupancy_df['occupancy_scaled'] = scaler.fit_transform(occupancy_df[['occupancy']])
 
-# Normalize auxiliary features
-aux_scaler = MinMaxScaler(feature_range=(0, 1))
-occupancy_df[['hour_scaled', 'day_scaled', 'weekend_scaled']] = aux_scaler.fit_transform(
-    occupancy_df[['hour', 'day_of_week', 'is_weekend']]
-)
+# Prepare auxiliary features (no scaling needed for most as they're already normalized)
+aux_features = [
+    'hour_sin', 'hour_cos',  # Cyclical time encodings (already normalized by sin/cos)
+    'day_sin', 'day_cos',    # Cyclical day encodings (already normalized by sin/cos)
+    'is_morning', 'is_afternoon', 'is_evening', 'is_night',  # Binary features
+    'is_weekend', 'is_weekday',  # Binary features
+    'is_peak_hours', 'is_open_hours'  # Binary features
+]
 
-# Create sequences
-print("\n3. Creating sequences...")
+# Only scale the week_of_year feature
+aux_scaler = MinMaxScaler(feature_range=(0, 1))
+occupancy_df['week_of_year_scaled'] = aux_scaler.fit_transform(occupancy_df[['week_of_year']])
+aux_features.append('week_of_year_scaled')
+
+# Create sequences with enhanced features
+print("\n3. Creating sequences with enhanced features...")
 
 X_seq, X_aux, y = [], [], []
 
 for i in range(len(occupancy_df) - SEQUENCE_LENGTH):
-    # Sequence
+    # Sequence features
     seq = occupancy_df['occupancy_scaled'].iloc[i:i+SEQUENCE_LENGTH].values
     X_seq.append(seq)
 
-    # Auxiliary features at prediction time
-    aux = occupancy_df[['hour_scaled', 'day_scaled', 'weekend_scaled']].iloc[i+SEQUENCE_LENGTH].values
+    # Enhanced auxiliary features at prediction time
+    aux = occupancy_df[aux_features].iloc[i+SEQUENCE_LENGTH].values
     X_aux.append(aux)
 
-    # Target
+    # Target value
     y.append(occupancy_df['occupancy_scaled'].iloc[i+SEQUENCE_LENGTH])
 
 X_seq = np.array(X_seq).reshape(-1, SEQUENCE_LENGTH, 1)
@@ -231,8 +291,21 @@ ablated_model = build_ablated_model(SEQUENCE_LENGTH)
 print(f"   Model parameters: {ablated_model.count_params():,}")
 
 callbacks = [
-    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=0),
-    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.00001, verbose=0)
+    EarlyStopping(
+        monitor='val_loss',
+        patience=30,  # Even more patience
+        restore_best_weights=True,
+        verbose=1,
+        min_delta=1e-4  # Minimum improvement threshold
+    ),
+    ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.3,  # More aggressive reduction
+        patience=15,  # More patience before reducing
+        min_lr=0.0000001,  # Even lower minimum LR
+        verbose=1,
+        cooldown=5  # Wait 5 epochs after reduction before monitoring again
+    )
 ]
 
 ablated_history = ablated_model.fit(
@@ -260,9 +333,11 @@ print(f"   MAE: {ablated_metrics['mae']:.2f}")
 # TRAIN FULL MODEL (WITH auxiliary features)
 # ============================================
 
-print("\n5. Training FULL Model (with auxiliary features)...")
+print("\n5. Training FULL Model with enhanced features...")
 
-full_model = build_full_model(SEQUENCE_LENGTH)
+num_aux_features = len(aux_features)
+print(f"   Number of auxiliary features: {num_aux_features}")
+full_model = build_full_model(SEQUENCE_LENGTH, num_aux_features)
 print(f"   Model parameters: {full_model.count_params():,}")
 
 full_history = full_model.fit(

@@ -1,7 +1,7 @@
 """
 Flask API Backend for Library Occupancy Predictions
 Serves real-time predictions to React dashboard
-Includes automatic updates
+Includes automatic updates and data management
 """
 
 from flask import Flask, jsonify, request, send_file
@@ -12,6 +12,14 @@ from datetime import datetime, timedelta
 import pickle
 import os
 import json
+from werkzeug.utils import secure_filename
+
+# Upload configuration
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+ALLOWED_EXTENSIONS = {'csv'}
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -565,6 +573,79 @@ def get_shap_report():
         logger.error(f"Error loading SHAP report: {e}")
         return jsonify({'error': str(e)}), 500
 
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/api/admin/upload-csv', methods=['POST'])
+def upload_csv():
+    """Upload a new CSV file"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
+        return jsonify({
+            'message': 'File uploaded successfully',
+            'filename': filename
+        })
+    
+    return jsonify({'error': 'Invalid file type'}), 400
+
+@app.route('/api/admin/clean-data', methods=['POST'])
+def clean_data():
+    """Clean and process uploaded data"""
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        if not filename:
+            return jsonify({'error': 'Filename not provided'}), 400
+
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        
+        # Read the CSV file
+        df = pd.read_csv(file_path)
+        
+        # Basic validation
+        required_columns = {'AP MAC', 'Client MAC', 'Start_dt'}
+        missing_cols = required_columns - set(df.columns)
+        if missing_cols:
+            return jsonify({
+                'error': f'Missing required columns: {", ".join(missing_cols)}'
+            }), 400
+
+        # Clean the data
+        df['Start_dt'] = pd.to_datetime(df['Start_dt'])
+        df = df.sort_values('Start_dt')
+        
+        # Remove duplicates
+        df = df.drop_duplicates()
+        
+        # Save cleaned data
+        cleaned_path = 'all_data_cleaned.csv'
+        df.to_csv(cleaned_path, index=False)
+        
+        # Clean up the upload
+        os.remove(file_path)
+        
+        # Update predictions cache
+        update_predictions_cache()
+        
+        return jsonify({
+            'message': 'Data cleaned successfully',
+            'rows_processed': len(df)
+        })
+
+    except Exception as e:
+        logger.error(f"Error cleaning data: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/', methods=['GET'])
 def home():
     """Home endpoint"""
@@ -582,7 +663,9 @@ def home():
             'POST /api/refresh': 'Force refresh predictions',
             'GET /api/shap/results': 'Get SHAP analysis results',
             'GET /api/shap/images/<filename>': 'Get SHAP visualization image',
-            'GET /api/shap/report': 'Get SHAP analysis text report'
+            'GET /api/shap/report': 'Get SHAP analysis text report',
+            'POST /api/admin/upload-csv': 'Upload new CSV data file',
+            'POST /api/admin/clean-data': 'Clean and process uploaded data'
         }
     })
 

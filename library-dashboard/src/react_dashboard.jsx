@@ -352,14 +352,20 @@ const LibraryOccupancyDashboard = () => {
         {/* Footer */}
         <div className="mt-8 text-center text-gray-600 text-sm">
           <p>Predictions updated every 60 seconds • Powered by ML Models</p>
-          <p className="mt-1">
+          <div className="mt-1 space-x-4">
             <button 
               onClick={fetchPredictions}
               className="text-blue-600 hover:text-blue-800 font-medium"
             >
               🔄 Refresh Now
             </button>
-          </p>
+            <a 
+              href="/admin"
+              className="text-gray-600 hover:text-gray-800 font-medium"
+            >
+              ⚙️ Admin Panel
+            </a>
+          </div>
         </div>
       </div>
     </div>
