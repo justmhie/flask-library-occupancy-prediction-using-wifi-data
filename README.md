@@ -4,6 +4,8 @@ A machine learning-powered system for predicting library occupancy in real-time 
 
 ## Features
 
+### Core Features
+
 - **Multiple Model Architectures**: Compare 4 different neural network models:
   - LSTM Only
   - CNN Only
@@ -22,6 +24,16 @@ A machine learning-powered system for predicting library occupancy in real-time 
 - **Interactive Dashboard**: React-based admin dashboard with model comparison
 - **Performance Metrics**: R², RMSE, MAE, and MAPE for each model/library combination
 - **Auto-Refresh**: Automatic updates every 60 seconds
+
+### Advanced Features (NEW)
+
+- **Granular Ablation Study**: Systematically test individual auxiliary features to identify performance impacts
+- **Exam Period Awareness**: Context-aware predictions that adapt to exam periods using historical exam patterns
+- **Student Survey Validation**: Collect and analyze survey data to validate WiFi detection and understand multi-device usage
+- **WiFi-RFID Correlation**: Validate WiFi-based occupancy against RFID ground truth with comprehensive statistical analysis
+- **SHAP Analysis**: Model interpretability with SHAP (SHapley Additive exPlanations) for feature importance visualization
+
+See [RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md) for detailed documentation of advanced features.
 
 ## System Architecture
 
@@ -234,23 +246,40 @@ Start background model retraining.
 
 ```
 real-time-prediction/
-├── api_backend.py              # Flask API server
-├── train_multiple_model_types.py  # Model training script
-├── ap_location_mapping.py      # AP-to-library mapping
-├── requirements.txt            # Python dependencies
-├── all_data_cleaned.csv        # WiFi data (not in git)
+├── api_backend.py                      # Flask API server
+├── train_multiple_model_types.py      # Model training script
+├── train_ablation_study.py            # Ablation study comparison
+├── ap_location_mapping.py              # AP-to-library mapping
+├── requirements.txt                    # Python dependencies
+├── all_data_cleaned.csv                # WiFi data (not in git)
 │
-├── saved_models/               # Trained model files (.keras)
-├── saved_scalers/             # Data scalers (.pkl)
-├── model_results/             # Training metrics (JSON)
+├── Advanced Features (NEW)
+├── train_granular_ablation_study.py   # Granular feature impact analysis
+├── exam_period_tagger.py               # Exam period tagging system
+├── train_with_exam_awareness.py       # Exam-aware model training
+├── student_survey_validation.py       # Survey validation system
+├── wifi_rfid_correlation.py           # WiFi vs RFID correlation analysis
+├── shap_analysis.py                    # SHAP interpretability module
+├── visualize_shap_comparison.py       # SHAP visualization across models
+├── RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md  # Complete guide for new features
 │
-└── library-dashboard/         # React frontend
+├── saved_models/                       # Trained model files (.keras)
+├── saved_scalers/                      # Data scalers (.pkl)
+├── model_results/                      # Training metrics (JSON)
+├── ablation_results/                   # Ablation study results
+├── granular_ablation_results/          # Granular ablation results (NEW)
+├── exam_aware_results/                 # Exam-aware model results (NEW)
+├── survey_validation_results/          # Survey analysis results (NEW)
+├── wifi_rfid_correlation_results/      # RFID correlation results (NEW)
+├── thesis_figures/                     # Publication-ready figures
+│
+└── library-dashboard/                  # React frontend
     ├── package.json
     ├── public/
     └── src/
-        ├── App.js             # Main app with view switcher
-        ├── AdminDashboard.js  # Model comparison dashboard
-        └── SimpleDashboard.js # User-facing dashboard
+        ├── App.js                      # Main app with view switcher
+        ├── AdminDashboard.js           # Model comparison dashboard
+        └── SimpleDashboard.js          # User-facing dashboard
 ```
 
 ## Model Performance
@@ -292,6 +321,76 @@ Or use the API:
 ```bash
 curl -X POST http://localhost:5000/api/models/retrain
 ```
+
+## Advanced Analysis and Validation
+
+### Granular Ablation Study
+
+Test individual auxiliary features to identify which cause performance degradation:
+
+```bash
+python train_granular_ablation_study.py
+```
+
+Outputs:
+- `granular_ablation_results/granular_ablation_results.json`
+- `thesis_figures/Granular_Ablation_Analysis.png`
+
+### Exam-Aware Model Training
+
+Train models that adapt to exam period patterns:
+
+```bash
+# 1. Configure exam periods (edit exam_periods_config.json or use tagger)
+python -c "from exam_period_tagger import ExamPeriodTagger; ExamPeriodTagger()"
+
+# 2. Train exam-aware model
+python train_with_exam_awareness.py
+```
+
+Outputs:
+- `exam_aware_results/baseline_model.keras`
+- `exam_aware_results/exam_aware_model.keras`
+- `thesis_figures/Exam_Aware_Model_Comparison.png`
+
+### Student Survey Validation
+
+Validate WiFi detection and understand multi-device usage:
+
+```bash
+# 1. Generate survey template and Google Form guide
+python student_survey_validation.py
+
+# 2. After collecting responses, analyze
+python -c "
+from student_survey_validation import StudentSurveyValidator
+validator = StudentSurveyValidator()
+survey_df = validator.load_survey_data('survey_responses.csv')
+validator.analyze_device_patterns(survey_df)
+validator.generate_correction_factor(survey_df)
+"
+```
+
+### WiFi vs RFID Correlation
+
+Validate WiFi-based occupancy against RFID ground truth:
+
+```bash
+# 1. Generate RFID data template
+python wifi_rfid_correlation.py
+
+# 2. After obtaining RFID logs, run correlation
+python -c "
+from wifi_rfid_correlation import WiFiRFIDCorrelation
+analyzer = WiFiRFIDCorrelation()
+wifi_df = analyzer.load_wifi_data('all_data_cleaned.csv')
+rfid_df = analyzer.load_rfid_data('rfid_logs.csv')
+merged, results = analyzer.correlate_data(wifi_df, rfid_df)
+analyzer.visualize_correlation(merged, results)
+"
+```
+
+For complete documentation, see [RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md).
 
 ## Troubleshooting
 
