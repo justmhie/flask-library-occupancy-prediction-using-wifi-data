@@ -9,3 +9,4 @@ data/
 # Or be more specific
 *_cleaned.csv
 all_data*.csv
+.env
