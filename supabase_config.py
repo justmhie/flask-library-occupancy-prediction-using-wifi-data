@@ -25,6 +25,57 @@ class SupabaseStorage:
     """Helper class for Supabase storage operations."""
 
     @staticmethod
+    def upload_file_to_storage(file_path: str, bucket_name: str, destination_path: str):
+        """
+        Upload a file to Supabase Storage.
+
+        Args:
+            file_path: Local file path
+            bucket_name: Supabase storage bucket name
+            destination_path: Path in the storage bucket
+
+        Returns:
+            str: Public URL of uploaded file
+        """
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+
+        # Upload to Supabase Storage
+        response = supabase.storage.from_(bucket_name).upload(
+            destination_path,
+            file_data,
+            file_options={"upsert": "true"}
+        )
+
+        # Get public URL
+        public_url = supabase.storage.from_(bucket_name).get_public_url(destination_path)
+        return public_url
+
+    @staticmethod
+    def download_file_from_storage(bucket_name: str, file_path: str, destination_path: str):
+        """
+        Download a file from Supabase Storage.
+
+        Args:
+            bucket_name: Supabase storage bucket name
+            file_path: Path in the storage bucket
+            destination_path: Local destination path
+
+        Returns:
+            bool: Success status
+        """
+        try:
+            response = supabase.storage.from_(bucket_name).download(file_path)
+
+            with open(destination_path, 'wb') as f:
+                f.write(response)
+
+            return True
+        except Exception as e:
+            print(f"Error downloading file: {e}")
+            return False
+
+    @staticmethod
     def save_wifi_data(df: pd.DataFrame, library_id: str = None):
         """
         Save WiFi data to Supabase.
