@@ -522,7 +522,7 @@ def retrain_models():
     try:
         import subprocess
         # Run training script in background
-        subprocess.Popen(['python', 'train_multiple_model_types.py'])
+        subprocess.Popen(['python', 'scripts/train_multiple_model_types.py'])
         return jsonify({'status': 'success', 'message': 'Model training started in background for all model types'})
     except Exception as e:
         logger.error(f"Error starting training: {e}")

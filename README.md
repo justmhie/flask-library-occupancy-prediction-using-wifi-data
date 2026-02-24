@@ -33,7 +33,14 @@ A machine learning-powered system for predicting library occupancy in real-time 
 - **WiFi-RFID Correlation**: Validate WiFi-based occupancy against RFID ground truth with comprehensive statistical analysis
 - **SHAP Analysis**: Model interpretability with SHAP (SHapley Additive exPlanations) for feature importance visualization
 
-See [RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md) for detailed documentation of advanced features.
+See [docs/RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](docs/RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md) for detailed documentation of advanced features.
+
+## Project structure
+
+- **`docs/`** – Documentation (how-to guides, Supabase, SHAP, React dashboard, etc.)
+- **`scripts/`** – Training and utility scripts (train models, Supabase, ablation, SHAP, etc.). Run from project root: `python scripts/<script>.py`
+- **`tests/`** – Test scripts (backend data check, SHAP integration). Run from project root: `pytest tests/` or `python tests/test_backend.py`
+- **Project root** – Application code (APIs, shared modules), config, and main [README](README.md)
 
 ## System Architecture
 
@@ -119,7 +126,7 @@ AP_LOCATION_MAP = {
 Train all 24 models (4 architectures × 6 libraries):
 
 ```bash
-python train_multiple_model_types.py
+python scripts/train_multiple_model_types.py
 ```
 
 This will:
@@ -247,21 +254,23 @@ Start background model retraining.
 ```
 real-time-prediction/
 ├── api_backend.py                      # Flask API server
-├── train_multiple_model_types.py      # Model training script
-├── train_ablation_study.py            # Ablation study comparison
+├── api_backend_supabase.py             # Flask API (Supabase)
 ├── ap_location_mapping.py              # AP-to-library mapping
+├── supabase_config.py                  # Supabase client
+├── shap_analysis.py                    # SHAP module
+├── exam_period_tagger.py               # Exam period tagging
 ├── requirements.txt                    # Python dependencies
 ├── all_data_cleaned.csv                # WiFi data (not in git)
-│
-├── Advanced Features (NEW)
-├── train_granular_ablation_study.py   # Granular feature impact analysis
-├── exam_period_tagger.py               # Exam period tagging system
-├── train_with_exam_awareness.py       # Exam-aware model training
-├── student_survey_validation.py       # Survey validation system
-├── wifi_rfid_correlation.py           # WiFi vs RFID correlation analysis
-├── shap_analysis.py                    # SHAP interpretability module
-├── visualize_shap_comparison.py       # SHAP visualization across models
-├── RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md  # Complete guide for new features
+├── docs/                               # Documentation
+├── scripts/                            # Training & utility scripts
+│   ├── train_multiple_model_types.py, train_multiple_model_types_supabase.py
+│   ├── train_model.py, train_all_libraries.py
+│   ├── train_ablation_study.py, train_granular_ablation_study.py
+│   ├── train_with_exam_awareness.py
+│   ├── setup_supabase_storage.py, download_models_from_supabase.py, migrate_to_supabase.py
+│   ├── check_training_status.py, verify_ap_mapping.py
+│   └── wifi_rfid_correlation.py, student_survey_validation.py, visualize_shap_comparison.py
+├── tests/                              # Test scripts
 │
 ├── saved_models/                       # Trained model files (.keras)
 ├── saved_scalers/                      # Data scalers (.pkl)
@@ -310,7 +319,7 @@ To retrain models with new data:
 1. Update `all_data_cleaned.csv` with new WiFi records
 2. Run training:
    ```bash
-   python train_multiple_model_types.py
+   python scripts/train_multiple_model_types.py
    ```
 3. Restart the backend to load new models:
    ```bash
@@ -329,7 +338,7 @@ curl -X POST http://localhost:5000/api/models/retrain
 Test individual auxiliary features to identify which cause performance degradation:
 
 ```bash
-python train_granular_ablation_study.py
+python scripts/train_granular_ablation_study.py
 ```
 
 Outputs:
@@ -345,7 +354,7 @@ Train models that adapt to exam period patterns:
 python -c "from exam_period_tagger import ExamPeriodTagger; ExamPeriodTagger()"
 
 # 2. Train exam-aware model
-python train_with_exam_awareness.py
+python scripts/train_with_exam_awareness.py
 ```
 
 Outputs:
@@ -359,11 +368,11 @@ Validate WiFi detection and understand multi-device usage:
 
 ```bash
 # 1. Generate survey template and Google Form guide
-python student_survey_validation.py
+python scripts/student_survey_validation.py
 
 # 2. After collecting responses, analyze
 python -c "
-from student_survey_validation import StudentSurveyValidator
+from scripts.student_survey_validation import StudentSurveyValidator
 validator = StudentSurveyValidator()
 survey_df = validator.load_survey_data('survey_responses.csv')
 validator.analyze_device_patterns(survey_df)
@@ -377,11 +386,11 @@ Validate WiFi-based occupancy against RFID ground truth:
 
 ```bash
 # 1. Generate RFID data template
-python wifi_rfid_correlation.py
+python scripts/wifi_rfid_correlation.py
 
 # 2. After obtaining RFID logs, run correlation
 python -c "
-from wifi_rfid_correlation import WiFiRFIDCorrelation
+from scripts.wifi_rfid_correlation import WiFiRFIDCorrelation
 analyzer = WiFiRFIDCorrelation()
 wifi_df = analyzer.load_wifi_data('all_data_cleaned.csv')
 rfid_df = analyzer.load_rfid_data('rfid_logs.csv')
@@ -390,7 +399,7 @@ analyzer.visualize_correlation(merged, results)
 "
 ```
 
-For complete documentation, see [RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md).
+For complete documentation, see [docs/RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](docs/RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md).
 
 ## Troubleshooting
 
@@ -405,7 +414,7 @@ For complete documentation, see [RECOMMENDATIONS_IMPLEMENTATION_GUIDE.md](RECOMM
 - Reinstall dependencies: `cd library-dashboard && npm install`
 
 ### Models not loading
-- Run training script first: `python train_multiple_model_types.py`
+- Run training script first: `python scripts/train_multiple_model_types.py`
 - Check `saved_models/` and `saved_scalers/` directories exist
 - Verify 24 .keras files and 24 .pkl files are present
 
