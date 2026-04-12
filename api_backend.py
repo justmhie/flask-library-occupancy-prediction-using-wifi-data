@@ -25,9 +25,13 @@ from sklearn.preprocessing import MinMaxScaler
 from apscheduler.schedulers.background import BackgroundScheduler
 import threading
 import logging
+from exam_period_tagger import ExamPeriodTagger
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
+
+# Initialize Exam Tagger
+exam_tagger = ExamPeriodTagger()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -122,6 +126,10 @@ def load_historical_data():
         from ap_location_mapping import get_location_from_ap
         df['Location'] = df['AP MAC'].apply(get_location_from_ap)
 
+        # Tag exam periods
+        df = exam_tagger.tag_dataframe(df.reset_index(), date_column='Start_dt')
+        df.set_index('Start_dt', inplace=True)
+
         logger.info(f"Date range: {df.index.min()} to {df.index.max()}")
         return df
     except Exception as e:
@@ -154,72 +162,94 @@ def get_library_occupancy(df, library_id, hours=None):
     # Return all data for pattern-based predictions (need full history)
     return occupancy if hours is None else occupancy.tail(hours)
 
-def predict_for_current_time(occupancy_series, library_id, hours_ahead=6):
-    """Predict for the CURRENT real-world time using historical patterns"""
+def predict_for_current_time(occupancy_series, library_id, hours_ahead=6, historical_df=None):
+    """Predict for the CURRENT real-world time using historical patterns and exam awareness"""
     if len(occupancy_series) == 0:
         return None
 
     # Get current real-world time
     now = datetime.now()
     current_hour = now.hour
-    current_day = now.weekday()  # Monday=0, Sunday=6
 
-    logger.info(f"Predicting for {library_id} - Current time: {now.strftime('%A %I:%M %p')} (day={current_day}, hour={current_hour})")
+    logger.info(f"Predicting for {library_id} - Current time: {now.strftime('%A %I:%M %p')}")
 
-    # Convert occupancy series to dataframe for easier manipulation
-    df = pd.DataFrame({'occupancy': occupancy_series})
-    df['hour'] = df.index.hour
-    df['day_of_week'] = df.index.dayofweek
+    # Use historical_df if provided (has all tags), otherwise use occupancy_series as baseline
+    if historical_df is not None:
+        df = historical_df[historical_df['Location'] == library_id].copy()
+        # Ensure we are using hourly aggregates for matching
+        df = df['Client MAC'].resample('h').nunique().fillna(0).to_frame('occupancy')
+        # Re-tag the resampled data
+        df = exam_tagger.tag_dataframe(df.reset_index(), date_column='Start_dt')
+        df['hour'] = df['Start_dt'].dt.hour
+        df['day_of_week'] = df['Start_dt'].dt.dayofweek
+        df.set_index('Start_dt', inplace=True)
+    else:
+        # Fallback to simple day/hour patterns if no tagged DF provided
+        df = pd.DataFrame({'occupancy': occupancy_series})
+        df['hour'] = df.index.hour
+        df['day_of_week'] = df.index.dayofweek
+        df['is_exam_period'] = 0
+        df['is_pre_exam_period'] = 0
 
     predictions = []
 
     for i in range(hours_ahead):
-        target_hour = (current_hour + i) % 24
-        target_day = (current_day + (current_hour + i) // 24) % 7
-
-        # Get historical data for this day/hour combination
-        matching = df[(df['hour'] == target_hour) & (df['day_of_week'] == target_day)]
+        target_time = now + timedelta(hours=i)
+        target_hour = target_time.hour
+        target_day = target_time.weekday()
+        
+        # Check exam status for the target prediction time
+        exam_status = exam_tagger.get_exam_status(target_time)
+        is_exam = exam_status['is_exam']
+        is_pre_exam = exam_status['is_pre_exam']
+        
+        mode_str = "NORMAL"
+        if is_exam:
+            # Match against ALL past exam days for this library
+            matching = df[(df['hour'] == target_hour) & (df['is_exam_period'] == 1)]
+            mode_str = f"EXAM ({exam_status['name']})"
+        elif is_pre_exam:
+            # Match against ALL past pre-exam days
+            matching = df[(df['hour'] == target_hour) & (df['is_pre_exam_period'] == 1)]
+            mode_str = "PRE-EXAM"
+        else:
+            # Standard matching: Same day of week, same hour
+            matching = df[(df['hour'] == target_hour) & (df['day_of_week'] == target_day) & (df['is_exam_period'] == 0)]
 
         if len(matching) > 0:
-            # Use recent history (last 8 weeks) if available
-            recent_matching = matching.tail(8)  # Last 8 occurrences
-
-            # Filter out extremely low values (likely closed days or errors)
-            # Only if we have enough data points
+            # Use recent history (last 8 occurrences of this pattern)
+            recent_matching = matching.tail(8)
             values = recent_matching['occupancy'].values
+            
             if len(values) >= 4:
-                # Remove values that are less than 10% of the median (likely closed)
                 median_val = np.median(values)
-                if median_val > 10:  # Only filter if median is reasonably high
+                if median_val > 10:
                     filtered = values[values > median_val * 0.1]
-                    if len(filtered) >= 3:
-                        avg_occupancy = filtered.mean()
-                    else:
-                        avg_occupancy = recent_matching['occupancy'].mean()
+                    avg_occupancy = filtered.mean() if len(filtered) >= 3 else values.mean()
                 else:
-                    avg_occupancy = recent_matching['occupancy'].mean()
+                    avg_occupancy = values.mean()
             else:
-                avg_occupancy = recent_matching['occupancy'].mean()
+                avg_occupancy = values.mean()
 
             predicted = max(0, int(avg_occupancy))
             predictions.append(predicted)
-            logger.info(f"  Hour +{i} ({target_hour}:00): {predicted} users (based on {len(recent_matching)} historical samples, values={values})")
+            logger.info(f"  Hour +{i} ({target_hour}:00) [{mode_str}]: {predicted} users (samples={len(recent_matching)})")
         else:
             # Fallback to overall hour average
             hour_avg = df[df['hour'] == target_hour]['occupancy'].mean()
             predicted = max(0, int(hour_avg))
             predictions.append(predicted)
-            logger.info(f"  Hour +{i} ({target_hour}:00): {predicted} users (fallback to hour average)")
+            logger.info(f"  Hour +{i} ({target_hour}:00) [FALLBACK]: {predicted} users")
 
     return predictions
 
-def predict_with_specific_model(model_type, library_id, occupancy_series, hours_ahead=6):
+def predict_with_specific_model(model_type, library_id, occupancy_series, hours_ahead=6, historical_df=None):
     """Predict using a specific model type and library"""
     global models_cache, scalers_cache
 
     # IMPORTANT: Use pattern-based prediction for current real-world time
     # This gives accurate predictions based on day/hour patterns
-    return predict_for_current_time(occupancy_series, library_id, hours_ahead)
+    return predict_for_current_time(occupancy_series, library_id, hours_ahead, historical_df)
 
     # Original model-based prediction (commented out but kept for reference)
     # model_key = f"{model_type}_{library_id}"
@@ -332,7 +362,7 @@ def generate_predictions_for_model_type(model_type, df=None):
 
             # Predictions using specific model type
             next_hour_predictions = predict_with_specific_model(
-                model_type, library_id, occupancy, hours_ahead=6
+                model_type, library_id, occupancy, hours_ahead=6, historical_df=df
             )
 
             if next_hour_predictions is None:

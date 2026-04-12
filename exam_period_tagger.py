@@ -182,6 +182,43 @@ class ExamPeriodTagger:
 
         print(f"✓ Configuration saved to {self.config_file}")
 
+    def get_exam_status(self, date):
+        """
+        Get detailed exam status for a specific date
+
+        Returns:
+            dict: {
+                'is_exam': bool,
+                'is_pre_exam': bool,
+                'type': str ('midterm'/'final'/None),
+                'name': str/None
+            }
+        """
+        is_exam, exam_info = self.is_exam_period(date)
+        if is_exam:
+            return {
+                'is_exam': True,
+                'is_pre_exam': False,
+                'type': exam_info['type'],
+                'name': exam_info['name']
+            }
+
+        is_pre_exam, exam_info = self.is_pre_exam_period(date, buffer_days=7)
+        if is_pre_exam:
+            return {
+                'is_exam': False,
+                'is_pre_exam': True,
+                'type': exam_info['type'],
+                'name': f"Pre-{exam_info['name']}"
+            }
+
+        return {
+            'is_exam': False,
+            'is_pre_exam': False,
+            'type': None,
+            'name': None
+        }
+
     def is_exam_period(self, date):
         """Check if a date falls within any exam period"""
         date = pd.to_datetime(date)
