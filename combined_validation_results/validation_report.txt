@@ -1,0 +1,23 @@
+
+============================================================
+COMBINED VALIDATION REPORT
+============================================================
+
+1. DATA SOURCE SUMMARY
+- WiFi Records processed: 579333
+- RFID Records processed: 29604
+- Survey Responses: 200
+
+2. MULTI-DEVICE ANALYSIS
+- Survey-reported devices/student: 1.45
+- Implied devices/student (WiFi/RFID): 1.50
+- Observed Bias: Over-counting
+
+3. CORRELATION RESULTS
+- WiFi MAC Count vs RFID Student Count: -0.0090
+
+4. RECOMMENDATION
+- Calculated Correction Factor: 0.6769
+- Formula: Adjusted Occupancy = WiFi_MAC_Count * 0.6769
+
+============================================================

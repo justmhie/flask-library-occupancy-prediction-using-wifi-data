@@ -1,0 +1,191 @@
+{
+  "baseline": {
+    "features": [],
+    "num_features": 0,
+    "metrics": {
+      "r2": 0.9611698358119473,
+      "mse": 84.30978182111262,
+      "rmse": 9.182035821162572,
+      "mae": 4.1135919893483734,
+      "mape": 81.015286002749
+    },
+    "parameters": 44626,
+    "epochs_trained": 56
+  },
+  "hour_only": {
+    "features": [
+      "hour_sin",
+      "hour_cos"
+    ],
+    "num_features": 2,
+    "metrics": {
+      "r2": 0.9505790652626376,
+      "mse": 107.30493450719088,
+      "rmse": 10.358809512062228,
+      "mae": 5.956558239176746,
+      "mape": 206.97693381438603
+    },
+    "parameters": 132908,
+    "epochs_trained": 86
+  },
+  "day_only": {
+    "features": [
+      "day_sin",
+      "day_cos"
+    ],
+    "num_features": 2,
+    "metrics": {
+      "r2": 0.9372342186130864,
+      "mse": 136.27985987735036,
+      "rmse": 11.673896516474281,
+      "mae": 5.99888596517488,
+      "mape": 159.97057368532276
+    },
+    "parameters": 132908,
+    "epochs_trained": 95
+  },
+  "weekend_only": {
+    "features": [
+      "is_weekend"
+    ],
+    "num_features": 1,
+    "metrics": {
+      "r2": 0.9132516286736639,
+      "mse": 188.3519272398684,
+      "rmse": 13.724136666467162,
+      "mae": 6.355857895425529,
+      "mape": 95.23448037873773
+    },
+    "parameters": 132876,
+    "epochs_trained": 76
+  },
+  "part_of_day": {
+    "features": [
+      "is_morning",
+      "is_afternoon",
+      "is_evening",
+      "is_night"
+    ],
+    "num_features": 4,
+    "metrics": {
+      "r2": 0.944449887598299,
+      "mse": 120.61287802039963,
+      "rmse": 10.982389449495935,
+      "mae": 5.410330933172348,
+      "mape": 131.79493735354754
+    },
+    "parameters": 132972,
+    "epochs_trained": 105
+  },
+  "week_patterns": {
+    "features": [
+      "is_weekday",
+      "week_of_year_scaled"
+    ],
+    "num_features": 2,
+    "metrics": {
+      "r2": 0.9169129372887299,
+      "mse": 180.4023309151909,
+      "rmse": 13.43139348374512,
+      "mae": 6.624808855293211,
+      "mape": 138.05418651812437
+    },
+    "parameters": 132908,
+    "epochs_trained": 77
+  },
+  "activity_periods": {
+    "features": [
+      "is_peak_hours",
+      "is_open_hours"
+    ],
+    "num_features": 2,
+    "metrics": {
+      "r2": 0.935711776447669,
+      "mse": 139.58545411022504,
+      "rmse": 11.814628818131572,
+      "mae": 6.890399343742073,
+      "mape": 223.94030019209947
+    },
+    "parameters": 132908,
+    "epochs_trained": 142
+  },
+  "hour_day": {
+    "features": [
+      "hour_sin",
+      "hour_cos",
+      "day_sin",
+      "day_cos"
+    ],
+    "num_features": 4,
+    "metrics": {
+      "r2": 0.928440760413031,
+      "mse": 155.37260794581852,
+      "rmse": 12.46485491074078,
+      "mae": 7.000563382825329,
+      "mape": 246.17015446969936
+    },
+    "parameters": 132972,
+    "epochs_trained": 120
+  },
+  "hour_weekend": {
+    "features": [
+      "hour_sin",
+      "hour_cos",
+      "is_weekend"
+    ],
+    "num_features": 3,
+    "metrics": {
+      "r2": 0.9303568218753094,
+      "mse": 151.21236996541248,
+      "rmse": 12.296843902620399,
+      "mae": 6.572447071082829,
+      "mape": 205.5259178668556
+    },
+    "parameters": 132940,
+    "epochs_trained": 82
+  },
+  "day_weekend": {
+    "features": [
+      "day_sin",
+      "day_cos",
+      "is_weekend"
+    ],
+    "num_features": 3,
+    "metrics": {
+      "r2": 0.9213461460999468,
+      "mse": 170.7767505073664,
+      "rmse": 13.068157885003012,
+      "mae": 7.364105714746743,
+      "mape": 218.56594850813735
+    },
+    "parameters": 132940,
+    "epochs_trained": 105
+  },
+  "all_features": {
+    "features": [
+      "hour_sin",
+      "hour_cos",
+      "day_sin",
+      "day_cos",
+      "is_morning",
+      "is_afternoon",
+      "is_evening",
+      "is_night",
+      "is_weekend",
+      "is_weekday",
+      "week_of_year_scaled",
+      "is_peak_hours",
+      "is_open_hours"
+    ],
+    "num_features": 13,
+    "metrics": {
+      "r2": 0.960473006890587,
+      "mse": 85.82276780906788,
+      "rmse": 9.264057847890841,
+      "mae": 4.6320240021306125,
+      "mape": 110.98827882558633
+    },
+    "parameters": 133260,
+    "epochs_trained": 105
+  }
+}
